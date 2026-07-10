@@ -1,0 +1,17 @@
+{
+    "required": true,
+    "package": "org.mesdag.opallight.mixin",
+    "compatibilityLevel": "JAVA_21",
+    "client": [
+        "client.multiplayer.ClientPacketListenerMixin",
+        "client.renderer.GameRendererMixin",
+        "world.level.chunk.LevelChunkMixin",
+        "world.level.lighting.LightEngineMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 1
+    },
+    "overwrites": {
+        "requireAnnotations": true
+    }
+}
