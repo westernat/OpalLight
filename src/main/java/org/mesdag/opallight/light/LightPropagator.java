@@ -1,6 +1,7 @@
 package org.mesdag.opallight.light;
 
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
 import it.unimi.dsi.fastutil.objects.ObjectIntPair;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import net.minecraft.core.BlockPos;
@@ -53,15 +54,15 @@ public final class LightPropagator {
         OpalColor color = colorWithEmissive.left();
         int emissive = colorWithEmissive.rightInt();
 
-        Deque<Node> queue = new ArrayDeque<>();
+        Deque<ObjectIntPair<BlockPos>> queue = new ArrayDeque<>();
         Set<Long> visited = new HashSet<>();
-        queue.add(new Node(source, 0));
+        queue.add(new ObjectIntImmutablePair<>(source, 0));
         visited.add(source.asLong());
 
         while (!queue.isEmpty()) {
-            Node node = queue.poll();
-            BlockPos pos = node.pos;
-            int dist = node.dist;
+            ObjectIntPair<BlockPos> node = queue.poll();
+            BlockPos pos = node.left();
+            int dist = node.rightInt();
 
             float factor = 1f - (float) dist / emissive;
             if (factor > 0f) {
@@ -90,10 +91,8 @@ public final class LightPropagator {
                 BlockState nextState = level.getBlockState(next);
                 if (nextState.isSolidRender(level, next)) continue;
 
-                queue.add(new Node(next, dist + 1));
+                queue.add(new ObjectIntImmutablePair<>(next, dist + 1));
             }
         }
     }
-
-    record Node(BlockPos pos, int dist) {}
 }

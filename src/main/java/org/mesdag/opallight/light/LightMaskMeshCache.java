@@ -66,7 +66,7 @@ public final class LightMaskMeshCache {
         VertexBuffer.unbind();
     }
 
-    private static MeshData build(ClientLevel level) {
+    private static @Nullable MeshData build(ClientLevel level) {
         if (LightColorCache.INSTANCE.getSections().isEmpty()) return null;
 
         BufferBuilder builder = new BufferBuilder(new ByteBufferBuilder(8192), VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);

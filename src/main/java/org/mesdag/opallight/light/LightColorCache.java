@@ -3,6 +3,7 @@ package org.mesdag.opallight.light;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Map;
 
@@ -13,7 +14,7 @@ public final class LightColorCache {
 
     private LightColorCache() {}
 
-    public OpalColor get(BlockPos pos) {
+    public @Nullable OpalColor get(BlockPos pos) {
         long key = sectionKey(pos);
         Map<Long, OpalColor> section = sections.get(key);
         return section != null ? section.get(pos.asLong()) : null;

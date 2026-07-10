@@ -10,17 +10,17 @@ import java.util.List;
 
 public record OpalColor(float r, float g, float b) {
     private static final Codec<Float> ELEMENT_CODEC = Codec.floatRange(0, 1);
-    public static final Codec<OpalColor> DIRECT_CODEC = RecordCodecBuilder.create(instance -> instance.group(
+    public static final Codec<OpalColor> OBJECT_CODEC = RecordCodecBuilder.create(instance -> instance.group(
             ELEMENT_CODEC.fieldOf("r").forGetter(OpalColor::r),
             ELEMENT_CODEC.fieldOf("g").forGetter(OpalColor::g),
             ELEMENT_CODEC.fieldOf("b").forGetter(OpalColor::b)
     ).apply(instance, OpalColor::new));
-    public static final Codec<OpalColor> LIST_CODEC = Codec.list(ELEMENT_CODEC, 3, 3).xmap(OpalColor::of, OpalColor::toList);
-    public static final Codec<OpalColor> INT_CODEC = Codec.INT.xmap(OpalColor::of, OpalColor::toInt);
-    public static final Codec<OpalColor> STRING_CODEC = Codec.STRING.xmap(OpalColor::of, OpalColor::toString);
+    public static final Codec<OpalColor> ARRAY_CODEC = Codec.list(ELEMENT_CODEC, 3, 3).xmap(OpalColor::of, OpalColor::toList);
+    public static final Codec<OpalColor> RGB_CODEC = Codec.INT.xmap(OpalColor::of, OpalColor::toInt);
+    public static final Codec<OpalColor> HEX_CODEC = Codec.STRING.xmap(OpalColor::of, OpalColor::toString);
     public static final Codec<OpalColor> CODEC = NeoForgeExtraCodecs.withAlternative(
-            NeoForgeExtraCodecs.withAlternative(DIRECT_CODEC, LIST_CODEC),
-            NeoForgeExtraCodecs.withAlternative(INT_CODEC, STRING_CODEC)
+            NeoForgeExtraCodecs.withAlternative(OBJECT_CODEC, ARRAY_CODEC),
+            NeoForgeExtraCodecs.withAlternative(RGB_CODEC, HEX_CODEC)
     );
     public static final OpalColor EMPTY = new OpalColor(0, 0, 0);
 
