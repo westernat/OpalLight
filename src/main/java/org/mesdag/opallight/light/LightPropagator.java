@@ -41,16 +41,16 @@ public final class LightPropagator {
             var chunk = level.getChunkSource().getChunkForLighting(cp.x, cp.z);
             if (chunk == null) continue;
             chunk.findBlockLightSources((pos, state) -> {
-                ObjectIntPair<LightManager.Color> colorWithEmissive = LightManager.colorWithEmissive(level, pos, state);
+                ObjectIntPair<OpalColor> colorWithEmissive = LightManager.colorWithEmissive(level, pos, state);
                 if (colorWithEmissive == null) return;
                 propagate(level, pos, colorWithEmissive);
             });
         }
     }
 
-    public static void propagate(Level level, BlockPos source, ObjectIntPair<LightManager.Color> colorWithEmissive) {
+    public static void propagate(Level level, BlockPos source, ObjectIntPair<OpalColor> colorWithEmissive) {
         long sourceSection = LightColorCache.sectionKey(source);
-        LightManager.Color color = colorWithEmissive.left();
+        OpalColor color = colorWithEmissive.left();
         int emissive = colorWithEmissive.rightInt();
 
         Deque<Node> queue = new ArrayDeque<>();
@@ -65,17 +65,17 @@ public final class LightPropagator {
 
             float factor = 1f - (float) dist / emissive;
             if (factor > 0f) {
-                LightManager.Color existing = LightColorCache.INSTANCE.get(pos);
+                OpalColor existing = LightColorCache.INSTANCE.get(pos);
                 float r = color.r() * factor;
                 float g = color.g() * factor;
                 float b = color.b() * factor;
                 if (existing == null) {
-                    LightColorCache.INSTANCE.put(pos, new LightManager.Color(r, g, b));
+                    LightColorCache.INSTANCE.put(pos, new OpalColor(r, g, b));
                 } else {
                     float newR = Math.min(1.0f, existing.r() + r);
                     float newG = Math.min(1.0f, existing.g() + g);
                     float newB = Math.min(1.0f, existing.b() + b);
-                    LightColorCache.INSTANCE.put(pos, new LightManager.Color(newR, newG, newB));
+                    LightColorCache.INSTANCE.put(pos, new OpalColor(newR, newG, newB));
                 }
                 long affectedKey = LightColorCache.sectionKey(pos);
                 sectionSources.computeIfAbsent(affectedKey, k -> new ObjectOpenHashSet<>()).add(sourceSection);

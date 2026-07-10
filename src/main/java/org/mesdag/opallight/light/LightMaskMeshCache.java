@@ -77,10 +77,10 @@ public final class LightMaskMeshCache {
         LayerLightEventListener listener = level.getLightEngine().getLayerListener(LightLayer.BLOCK);
         BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
 
-        for (Map<Long, LightManager.Color> allLit : LightColorCache.INSTANCE.getSections().values()) {
+        for (Map<Long, OpalColor> allLit : LightColorCache.INSTANCE.getSections().values()) {
             for (long packedPos : allLit.keySet()) {
                 BlockPos airPos = BlockPos.of(packedPos);
-                LightManager.Color airColor = LightColorCache.INSTANCE.get(airPos);
+                OpalColor airColor = LightColorCache.INSTANCE.get(airPos);
                 for (Direction dir : DIRECTIONS) {
                     BlockPos solidPos = airPos.relative(dir.getOpposite());
                     BlockState solidState = level.getBlockState(solidPos);
@@ -117,7 +117,7 @@ public final class LightMaskMeshCache {
             int wx, int wy, int wz,
             LayerLightEventListener listener,
             BlockPos.MutableBlockPos mutable,
-            @Nullable LightManager.Color airColor
+            @Nullable OpalColor airColor
     ) {
         int[] vertices = quad.getVertices();
         int vertexSize = 8;

@@ -9,17 +9,17 @@ import java.util.Map;
 public final class LightColorCache {
     public static final LightColorCache INSTANCE = new LightColorCache();
 
-    private final Map<Long, Map<Long, LightManager.Color>> sections = new Object2ObjectOpenHashMap<>(); // section pos -> block pos -> color
+    private final Map<Long, Map<Long, OpalColor>> sections = new Object2ObjectOpenHashMap<>(); // section pos -> block pos -> color
 
     private LightColorCache() {}
 
-    public LightManager.Color get(BlockPos pos) {
+    public OpalColor get(BlockPos pos) {
         long key = sectionKey(pos);
-        Map<Long, LightManager.Color> section = sections.get(key);
+        Map<Long, OpalColor> section = sections.get(key);
         return section != null ? section.get(pos.asLong()) : null;
     }
 
-    public void put(BlockPos pos, LightManager.Color color) {
+    public void put(BlockPos pos, OpalColor color) {
         long key = sectionKey(pos);
         sections.computeIfAbsent(key, k -> new Object2ObjectOpenHashMap<>()).put(pos.asLong(), color);
         LightMaskMeshCache.markDirty();
@@ -27,7 +27,7 @@ public final class LightColorCache {
 
     public void remove(BlockPos pos) {
         long key = sectionKey(pos);
-        Map<Long, LightManager.Color> section = sections.get(key);
+        Map<Long, OpalColor> section = sections.get(key);
         if (section != null) {
             section.remove(pos.asLong());
             if (section.isEmpty()) {
@@ -53,7 +53,7 @@ public final class LightColorCache {
         }
     }
 
-    public Map<Long, Map<Long, LightManager.Color>> getSections() {
+    public Map<Long, Map<Long, OpalColor>> getSections() {
         return sections;
     }
 

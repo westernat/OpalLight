@@ -1,4 +1,4 @@
-package org.mesdag.opallight.mixin.client.renderer;
+package org.mesdag.opallight.mixin;
 
 import com.llamalad7.mixinextras.sugar.Local;
 import net.minecraft.client.Camera;

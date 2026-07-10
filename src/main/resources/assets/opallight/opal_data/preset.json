@@ -1,0 +1,6 @@
+{
+    "block": {
+        "minecraft:lantern": [1.0, 0.15, 0.05],
+        "minecraft:soul_lantern": [0.05, 0.15, 1.0]
+    }
+}

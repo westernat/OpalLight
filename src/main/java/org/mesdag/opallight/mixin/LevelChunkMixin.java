@@ -1,4 +1,4 @@
-package org.mesdag.opallight.mixin.world.level.chunk;
+package org.mesdag.opallight.mixin;
 
 import com.llamalad7.mixinextras.injector.ModifyExpressionValue;
 import com.llamalad7.mixinextras.sugar.Local;

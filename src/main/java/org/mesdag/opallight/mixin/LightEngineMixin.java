@@ -1,4 +1,4 @@
-package org.mesdag.opallight.mixin.world.level.lighting;
+package org.mesdag.opallight.mixin;
 
 import com.llamalad7.mixinextras.sugar.Share;
 import com.llamalad7.mixinextras.sugar.ref.LocalRef;
