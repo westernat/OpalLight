@@ -15,6 +15,8 @@ import java.util.*;
 
 public final class LightPropagator {
     private static final Map<Long, Set<Long>> sectionSources = new Object2ObjectOpenHashMap<>();
+    private static final Deque<ObjectIntPair<BlockPos>> queue = new ArrayDeque<>();
+    private static final Set<Long> visited = new HashSet<>();
 
     public static boolean isSectionAffected(long sectionPos) {
         Set<Long> sources = sectionSources.get(sectionPos);
@@ -54,8 +56,8 @@ public final class LightPropagator {
         OpalColor color = colorWithEmissive.left();
         int emissive = colorWithEmissive.rightInt();
 
-        Deque<ObjectIntPair<BlockPos>> queue = new ArrayDeque<>();
-        Set<Long> visited = new HashSet<>();
+        queue.clear();
+        visited.clear();
         queue.add(new ObjectIntImmutablePair<>(source, 0));
         visited.add(source.asLong());
 

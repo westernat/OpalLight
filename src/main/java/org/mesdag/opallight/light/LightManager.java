@@ -119,14 +119,16 @@ public final class LightManager {
                     .createCompositeState(false)
     );
 
+    private static final Matrix4f mat = new Matrix4f();
+
     // use mixin to compatible iris or other mod
     public static void render(Matrix4f viewMatrix, Camera camera) {
         Vec3 pos = camera.getPosition();
-        viewMatrix.translate((float) -pos.x, (float) -pos.y, (float) -pos.z);
+        mat.set(viewMatrix).translate((float) -pos.x, (float) -pos.y, (float) -pos.z);
 
         Matrix4fStack modelViewStack = RenderSystem.getModelViewStack();
         modelViewStack.pushMatrix();
-        modelViewStack.set(viewMatrix);
+        modelViewStack.set(mat);
         RenderSystem.applyModelViewMatrix();
 
         LIGHT_MASK.setupRenderState();

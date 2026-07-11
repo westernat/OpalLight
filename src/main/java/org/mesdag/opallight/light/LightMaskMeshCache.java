@@ -25,6 +25,8 @@ import java.util.Map;
 
 public final class LightMaskMeshCache {
     private static final Direction[] DIRECTIONS = Direction.values();
+    private static final Map<BlockState, BakedModel> modelCache = new Reference2ObjectOpenHashMap<>();
+    private static final HashSet<BlockPos> renderedNull = new HashSet<>();
     private static boolean dirty;
     private static VertexBuffer buffer;
 
@@ -70,11 +72,11 @@ public final class LightMaskMeshCache {
     private static @Nullable MeshData build(ClientLevel level) {
         if (LightColorCache.INSTANCE.getSections().isEmpty()) return null;
 
-        BufferBuilder builder = new BufferBuilder(new ByteBufferBuilder(8192), VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
+        BufferBuilder builder = new BufferBuilder(new ByteBufferBuilder(65536), VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
         RandomSource random = level.random;
-        HashSet<BlockPos> renderedNull = new HashSet<>();
+        modelCache.clear();
+        renderedNull.clear();
         BlockModelShaper shaper = Minecraft.getInstance().getBlockRenderer().getBlockModelShaper();
-        Map<BlockState, BakedModel> modelCache = new Reference2ObjectOpenHashMap<>();
         LayerLightEventListener listener = level.getLightEngine().getLayerListener(LightLayer.BLOCK);
         BlockPos.MutableBlockPos mutable = new BlockPos.MutableBlockPos();
 

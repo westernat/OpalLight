@@ -12,6 +12,7 @@ import org.mesdag.opallight.light.LightPropagator;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 
 import java.util.HashSet;
@@ -19,6 +20,9 @@ import java.util.Set;
 
 @Mixin(LevelChunk.class)
 public class LevelChunkMixin {
+    @Unique
+    private static final Set<ChunkPos> opalLight$affectedChunks = new HashSet<>();
+
     @Shadow
     @Final
     Level level;
@@ -30,13 +34,13 @@ public class LevelChunkMixin {
             if (LightPropagator.isSectionAffected(key)) {
                 int cx = SectionPos.blockToSectionCoord(pos.getX());
                 int cz = SectionPos.blockToSectionCoord(pos.getZ());
-                Set<ChunkPos> affectedChunks = new HashSet<>();
+                opalLight$affectedChunks.clear();
                 for (int dx = -1; dx <= 1; dx++) {
                     for (int dz = -1; dz <= 1; dz++) {
-                        affectedChunks.add(new ChunkPos(cx + dx, cz + dz));
+                        opalLight$affectedChunks.add(new ChunkPos(cx + dx, cz + dz));
                     }
                 }
-                LightPropagator.forceRepropagate(level, affectedChunks);
+                LightPropagator.forceRepropagate(level, opalLight$affectedChunks);
             }
         }
         return original;
