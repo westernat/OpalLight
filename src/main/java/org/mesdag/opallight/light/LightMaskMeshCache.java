@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vertex.*;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.block.BlockModelShaper;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.resources.model.BakedModel;
@@ -31,7 +32,7 @@ public final class LightMaskMeshCache {
         dirty = true;
     }
 
-    public static void draw() {
+    public static void draw(ShaderInstance shader) {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
 
@@ -41,7 +42,7 @@ public final class LightMaskMeshCache {
 
         if (buffer != null) {
             buffer.bind();
-            buffer.drawWithShader(RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), RenderSystem.getShader());
+            buffer.drawWithShader(RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), shader);
             VertexBuffer.unbind();
         }
     }
