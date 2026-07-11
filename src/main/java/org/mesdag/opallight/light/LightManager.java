@@ -110,7 +110,7 @@ public final class LightManager {
             false,
             true,
             RenderType.CompositeState.builder()
-                    .setShaderState(new RenderStateShard.ShaderStateShard(() -> LightManager.lightMaskShader))
+                    .setShaderState(new RenderStateShard.ShaderStateShard(() -> lightMaskShader))
                     .setTextureState(RenderType.BLOCK_SHEET)
                     .setTransparencyState(RenderStateShard.NO_TRANSPARENCY)
                     .setDepthTestState(RenderType.LEQUAL_DEPTH_TEST)
