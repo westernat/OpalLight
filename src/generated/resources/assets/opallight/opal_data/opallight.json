@@ -1,0 +1,37 @@
+{
+  "opallight:blue_lantern": [
+    0.0,
+    0.0,
+    1.0
+  ],
+  "opallight:cyan_lantern": [
+    0.0,
+    1.0,
+    1.0
+  ],
+  "opallight:green_lantern": [
+    0.0,
+    1.0,
+    0.0
+  ],
+  "opallight:orange_lantern": [
+    1.0,
+    0.40784314,
+    0.12156863
+  ],
+  "opallight:purple_lantern": [
+    0.627451,
+    0.1254902,
+    0.9411765
+  ],
+  "opallight:red_lantern": [
+    1.0,
+    0.0,
+    0.0
+  ],
+  "opallight:yellow_lantern": [
+    1.0,
+    1.0,
+    0.0
+  ]
+}

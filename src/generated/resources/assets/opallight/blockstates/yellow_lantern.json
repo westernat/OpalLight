@@ -1,0 +1,10 @@
+{
+  "variants": {
+    "hanging=false": {
+      "model": "opallight:block/lantern"
+    },
+    "hanging=true": {
+      "model": "opallight:block/lantern_hanging"
+    }
+  }
+}
