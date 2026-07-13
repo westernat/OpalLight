@@ -60,5 +60,6 @@ public abstract class LightEngineMixin {
     private void onTail(CallbackInfoReturnable<Integer> cir) {
         if (opalLight$isInValid || opalLight$affectedChunks.isEmpty()) return;
         LightPropagator.forceRepropagate((ClientLevel) chunkSource.getLevel(), opalLight$affectedChunks);
+        opalLight$affectedChunks.clear();
     }
 }
