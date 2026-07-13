@@ -3,11 +3,12 @@ package org.mesdag.opallight.light;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
+import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.block.BlockModelShaper;
 import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -17,11 +18,15 @@ import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.lighting.LayerLightEventListener;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.model.data.ModelData;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Matrix4f;
 
 import java.util.HashSet;
 import java.util.Map;
+
+import static org.mesdag.opallight.light.LightManager.lightMaskShader;
 
 public final class LightMaskMeshCache {
     private static final Direction[] DIRECTIONS = Direction.values();
@@ -34,17 +39,28 @@ public final class LightMaskMeshCache {
         dirty = true;
     }
 
-    public static void draw(ShaderInstance shader) {
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
+    private static final Matrix4f mat = new Matrix4f();
+    private static int blockAtlas;
 
+    @SuppressWarnings("all")
+    public static void draw(Matrix4f viewMatrix, Camera camera) {
         if (dirty || buffer == null || buffer.isInvalid()) {
+            Minecraft minecraft = Minecraft.getInstance();
+            ClientLevel level = minecraft.level;
+            if (level == null) return;
+            blockAtlas = minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId();
             upload(level);
         }
 
         if (buffer != null) {
             buffer.bind();
-            buffer.drawWithShader(RenderSystem.getModelViewMatrix(), RenderSystem.getProjectionMatrix(), shader);
+            lightMaskShader.setSampler("Sampler0", blockAtlas);
+            Vec3 pos = camera.getPosition();
+            lightMaskShader.MODEL_VIEW_MATRIX.set(mat.set(viewMatrix).translate((float) -pos.x, (float) -pos.y, (float) -pos.z));
+            lightMaskShader.PROJECTION_MATRIX.set(RenderSystem.getProjectionMatrix());
+            lightMaskShader.apply();
+            buffer.draw();
+            lightMaskShader.clear();
             VertexBuffer.unbind();
         }
     }

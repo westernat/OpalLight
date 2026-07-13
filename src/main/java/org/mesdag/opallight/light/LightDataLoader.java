@@ -1,18 +1,17 @@
 package org.mesdag.opallight.light;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.mojang.datafixers.util.Pair;
+import com.mojang.datafixers.util.Either;
 import com.mojang.serialization.Codec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
+import net.minecraft.advancements.critereon.StatePropertiesPredicate;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.server.packs.resources.SimpleJsonResourceReloadListener;
-import net.minecraft.util.GsonHelper;
 import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -22,38 +21,46 @@ import net.neoforged.fml.event.IModBusEvent;
 import net.neoforged.neoforge.common.conditions.ConditionalOps;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
 
 public final class LightDataLoader extends SimpleJsonResourceReloadListener {
     public static final LightDataLoader INSTANCE = new LightDataLoader();
-    private static final Codec<Map<Block, OpalColor>> BLOCK_DATA_CODEC = Codec.unboundedMap(BuiltInRegistries.BLOCK.byNameCodec(), OpalColor.CODEC);
-    private static final Codec<Map<BlockState, OpalColor>> STATE_DATA_CODEC = Codec.compoundList(BlockState.CODEC, OpalColor.CODEC).xmap(list -> {
-        ImmutableMap.Builder<BlockState, OpalColor> builder = ImmutableMap.builder();
-        for (Pair<BlockState, OpalColor> pair : list) {
-            builder.put(pair.getFirst(), pair.getSecond());
-        }
-        return builder.build();
-    }, map -> {
-        ImmutableList.Builder<Pair<BlockState, OpalColor>> builder = ImmutableList.builder();
-        for (Map.Entry<BlockState, OpalColor> entry : map.entrySet()) {
-            builder.add(new Pair<>(entry.getKey(), entry.getValue()));
-        }
-        return builder.build();
-    });
 
-    private Map<Block, OpalColor> blockData = ImmutableMap.of();
-    private Map<BlockState, OpalColor> stateData = ImmutableMap.of();
+    public record OpalData(OpalColor color, Optional<StatePropertiesPredicate> statePredicate) {
+        public static final Codec<OpalData> DIRECT_CODEC = RecordCodecBuilder.create(instance -> instance.group(
+                OpalColor.CODEC.fieldOf("color").forGetter(OpalData::color),
+                StatePropertiesPredicate.CODEC.lenientOptionalFieldOf("state").forGetter(OpalData::statePredicate)
+        ).apply(instance, OpalData::new));
+        public static final Codec<OpalData> CODEC = Codec.either(DIRECT_CODEC, OpalColor.CODEC).xmap(
+                either -> either.map(Function.identity(), color -> new OpalData(color, Optional.empty())),
+                data -> data.statePredicate.isEmpty() ? Either.right(data.color) : Either.left(data)
+        );
 
-    public @Nullable OpalColor getColor(Block block) {
-        return blockData.get(block);
+        public boolean matches(BlockState state) {
+            return statePredicate.isEmpty() || statePredicate.get().matches(state);
+        }
     }
 
-    public @Nullable OpalColor getColor(BlockState state, boolean useBlockAsFallback) {
-        OpalColor color = stateData.get(state);
-        if (color == null && useBlockAsFallback) {
-            return getColor(state.getBlock());
+    public static final Codec<Map<Block, List<OpalData>>> CODEC = Codec.lazyInitialized(() -> {
+        Codec<List<OpalData>> listCodec = Codec.either(OpalData.CODEC, OpalData.CODEC.listOf()).xmap(
+                either -> either.map(List::of, Function.identity()),
+                list -> list.size() == 1 ? Either.left(list.getFirst()) : Either.right(list)
+        );
+        return Codec.unboundedMap(BuiltInRegistries.BLOCK.byNameCodec(), listCodec);
+    });
+
+    private Map<Block, List<OpalData>> dataByBlock = ImmutableMap.of();
+
+    public @Nullable OpalColor getColor(BlockState state) {
+        List<OpalData> list = dataByBlock.get(state.getBlock());
+        if (list == null) return null;
+        for (OpalData data : list) {
+            if (data.matches(state)) return data.color;
         }
-        return color;
+        return null;
     }
 
     private LightDataLoader() {
@@ -63,33 +70,23 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
     @Override
     protected void apply(Map<ResourceLocation, JsonElement> map, ResourceManager manager, ProfilerFiller filler) {
         ConditionalOps<JsonElement> ops = makeConditionalOps();
-        this.blockData = new Reference2ObjectOpenHashMap<>();
-        this.stateData = new Reference2ObjectOpenHashMap<>();
+        Map<Block, List<OpalData>> mutable = new Reference2ObjectOpenHashMap<>();
         for (JsonElement element : map.values()) {
-            JsonObject object = GsonHelper.convertToJsonObject(element, "light_data");
-            BLOCK_DATA_CODEC.parse(ops, object.get("block")).ifSuccess(blockData::putAll);
-            STATE_DATA_CODEC.parse(ops, object.get("state")).ifSuccess(stateData::putAll);
+            CODEC.parse(ops, element).ifSuccess(mutable::putAll);
         }
-        ModLoader.postEvent(new ModificationEvent(blockData, stateData));
-        this.blockData = ImmutableMap.copyOf(blockData);
-        this.stateData = ImmutableMap.copyOf(stateData);
+        ModLoader.postEvent(new ModificationEvent(mutable));
+        this.dataByBlock = ImmutableMap.copyOf(mutable);
     }
 
     public static class ModificationEvent extends Event implements IModBusEvent {
-        private final Map<Block, OpalColor> blockData;
-        private final Map<BlockState, OpalColor> stateData;
+        private final Map<Block, List<OpalData>> dataByBlock;
 
-        public ModificationEvent(Map<Block, OpalColor> blockData, Map<BlockState, OpalColor> stateData) {
-            this.blockData = blockData;
-            this.stateData = stateData;
+        public ModificationEvent(Map<Block, List<OpalData>> dataByBlock) {
+            this.dataByBlock = dataByBlock;
         }
 
-        public Map<Block, OpalColor> getBlockData() {
-            return blockData;
-        }
-
-        public Map<BlockState, OpalColor> getStateData() {
-            return stateData;
+        public Map<Block, List<OpalData>> getDataByBlock() {
+            return dataByBlock;
         }
     }
 
