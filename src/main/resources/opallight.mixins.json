@@ -3,10 +3,11 @@
     "package": "org.mesdag.opallight.mixin",
     "compatibilityLevel": "JAVA_21",
     "client": [
-        "ClientPacketListenerMixin",
+        "ClientChunkCacheMixin",
+        "ClientLevelMixin",
         "GameRendererMixin",
         "LevelChunkMixin",
-        "LightEngineMixin"
+        "ModelDataManagerMixin"
     ],
     "injectors": {
         "defaultRequire": 1

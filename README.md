@@ -8,7 +8,7 @@
 
 OpalLight provides a **universal colored light API** for Minecraft. Unlike common full-screen shader approaches,
 OpalLight uses **per-block, voxel-level RGB light propagation**——colors travel through blocks via BFS, attenuate with
-distance, and blend naturally when overlapping. This means colored lighting renders correctly around corners and through
+distance, mix across RGB channels, and take the strongest value within each channel. This means colored lighting renders correctly around corners and through
 complex geometry, rather than being a screen-space post-effect.
 
 The key advantage: **automatically compatible with the vast majority of Iris Shaders** with zero user configuration.
@@ -27,7 +27,7 @@ Also fully supports the VulkanMod renderer.
 ### True Color Propagation
 
 - Voxel-level BFS light propagation, with linear attenuation over Manhattan distance.
-- Multi-source color blending for natural gradient effects.
+- Per-channel multi-source merging: different channels mix naturally while equal channels use the strongest value, so removing a source remains exact.
 - Correct lighting regardless of terrain complexity——corners, crevices, and caves all light accurately.
 
 ### Broad Compatibility
