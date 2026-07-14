@@ -68,12 +68,16 @@ public class OpalLight {
             items.register(name, () -> new BlockItem(block.get(), new Item.Properties()));
         }
         tabs.register("lanterns", () -> CreativeModeTab.builder()
-                .icon(BuiltInRegistries.ITEM.get(ResourceLocation.fromNamespaceAndPath(MODID, "green_lantern"))::getDefaultInstance)
+                .icon(BuiltInRegistries.ITEM.get(asResource("green_lantern"))::getDefaultInstance)
                 .title(Component.translatable("itemGroup.opallight")).displayItems(((parameters, output) -> {
                     for (DeferredHolder<Item, ? extends Item> entry : items.getEntries()) {
                         output.accept(entry.get());
                     }
                 })).build());
+    }
+
+    public static ResourceLocation asResource(String path) {
+        return ResourceLocation.fromNamespaceAndPath(MODID, path);
     }
 
     @SubscribeEvent

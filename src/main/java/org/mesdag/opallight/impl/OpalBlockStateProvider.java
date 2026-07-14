@@ -19,13 +19,13 @@ public class OpalBlockStateProvider extends BlockStateProvider {
 
     @Override
     protected void registerStatesAndModels() {
-        ConfiguredModel lanternModel = new ConfiguredModel(new ModelFile.UncheckedModelFile(ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, "block/lantern")));
-        ConfiguredModel lanternHangingModel = new ConfiguredModel(new ModelFile.UncheckedModelFile(ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, "block/lantern_hanging")));
-        ResourceLocation lanternLayer0 = ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, "item/lantern");
-        ResourceLocation lanternLayer1 = ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, "item/lantern_layer");
+        ConfiguredModel lanternModel = new ConfiguredModel(new ModelFile.UncheckedModelFile(OpalLight.asResource("block/lantern")));
+        ConfiguredModel lanternHangingModel = new ConfiguredModel(new ModelFile.UncheckedModelFile(OpalLight.asResource("block/lantern_hanging")));
+        ResourceLocation lanternLayer0 = OpalLight.asResource("item/lantern");
+        ResourceLocation lanternLayer1 = OpalLight.asResource("item/lantern_layer");
         ModelFile.UncheckedModelFile itemGenerated = new ModelFile.UncheckedModelFile(ResourceLocation.withDefaultNamespace("item/generated"));
         for (DyeColor color : OpalLight.COLORS) {
-            ResourceLocation id = ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, color.getName() + "_lantern");
+            ResourceLocation id = OpalLight.asResource(color.getName() + "_lantern");
             Block block = BuiltInRegistries.BLOCK.get(id);
             getVariantBuilder(block)
                     .partialState().with(LanternBlock.HANGING, false).setModels(lanternModel)

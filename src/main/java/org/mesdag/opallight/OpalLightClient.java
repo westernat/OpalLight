@@ -1,7 +1,6 @@
 package org.mesdag.opallight;
 
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FastColor;
 import net.minecraft.world.item.DyeColor;
 import net.neoforged.api.distmarker.Dist;
@@ -23,7 +22,7 @@ public class OpalLightClient {
                     return FastColor.ARGB32.opaque(color.getTextureDiffuseColor());
                 }
                 return -1;
-            }, BuiltInRegistries.BLOCK.get(ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, color.getName() + "_lantern")));
+            }, BuiltInRegistries.BLOCK.get(OpalLight.asResource(color.getName() + "_lantern")));
         }
     }
 
@@ -35,7 +34,7 @@ public class OpalLightClient {
                     return FastColor.ARGB32.opaque(color.getTextureDiffuseColor());
                 }
                 return -1;
-            }, BuiltInRegistries.ITEM.get(ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, color.getName() + "_lantern")));
+            }, BuiltInRegistries.ITEM.get(OpalLight.asResource(color.getName() + "_lantern")));
         }
     }
 }

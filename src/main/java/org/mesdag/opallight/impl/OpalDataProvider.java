@@ -7,7 +7,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.data.CachedOutput;
 import net.minecraft.data.DataProvider;
 import net.minecraft.data.PackOutput;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.Block;
 import org.jetbrains.annotations.Nullable;
@@ -36,7 +35,7 @@ public class OpalDataProvider implements DataProvider {
 
     public void gather() {
         for (DyeColor color : OpalLight.COLORS) {
-            add(BuiltInRegistries.BLOCK.get(ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, color.getName() + "_lantern")), color.getTextColor());
+            add(BuiltInRegistries.BLOCK.get(OpalLight.asResource(color.getName() + "_lantern")), color.getTextColor());
         }
     }
 

@@ -22,11 +22,10 @@ public class OpalRecipeProvider extends RecipeProvider {
     @Override
     protected void buildRecipes(RecipeOutput recipeOutput) {
         for (DyeColor color : OpalLight.COLORS) {
-            ResourceLocation dyeId = ResourceLocation.withDefaultNamespace(color.getName() + "_dye");
-            ResourceLocation torchId = ResourceLocation.fromNamespaceAndPath(OpalLight.MODID, color.getName() + "_lantern");
+            ResourceLocation torchId = OpalLight.asResource(color.getName() + "_lantern");
             ShapelessRecipeBuilder.shapeless(RecipeCategory.DECORATIONS, BuiltInRegistries.ITEM.get(torchId))
                     .requires(Items.LANTERN)
-                    .requires(BuiltInRegistries.ITEM.get(dyeId))
+                    .requires(BuiltInRegistries.ITEM.get(ResourceLocation.withDefaultNamespace(color.getName() + "_dye")))
                     .unlockedBy("has_stone_pickaxe", has(Items.STONE_PICKAXE))
                     .save(recipeOutput, torchId);
         }
