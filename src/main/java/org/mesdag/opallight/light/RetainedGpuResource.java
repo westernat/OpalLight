@@ -3,13 +3,11 @@ package org.mesdag.opallight.light;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-/**
- * 在原子发布表与 generation cache 之间共享单个 GPU 资源的显式租约。
- *
- * <p>两个容器不能直接共同拥有同一个 VBO，否则任意一侧替换或淘汰都会让另一侧持有
- * 已关闭的 OpenGL 对象。每个容器因此持有独立 {@link Lease}；最后一份租约关闭时才执行
- * 真正的资源释放。所有 acquire、读取和 close 都受 Render-thread 断言保护。</p>
- */
+/// 在原子发布表与 generation cache 之间共享单个 GPU 资源的显式租约。
+///
+/// 两个容器不能直接共同拥有同一个 VBO，否则任意一侧替换或淘汰都会让另一侧持有
+/// 已关闭的 OpenGL 对象。每个容器因此持有独立 [Lease]；最后一份租约关闭时才执行
+/// 真正的资源释放。所有 acquire、读取和 close 都受 Render-thread 断言保护。
 final class RetainedGpuResource<T> {
     private final T value;
     private final long bytes;

@@ -1,29 +1,25 @@
 package org.mesdag.opallight.light;
 
-import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
-import it.unimi.dsi.fastutil.longs.LongIterator;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.longs.*;
 
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
 
-/** 采用原版先衰减、后增强流程的增量三通道光照引擎。 */
+/// 采用原版先衰减、后增强流程的增量三通道光照引擎。
 final class RgbLightEngine {
     record ChunkSnapshot(RgbLightVolume.ChunkSnapshot light, RgbLightVolume.ChunkSnapshot directEmissions) {
         int sectionCount() {
             return light.sectionCount() + directEmissions.sectionCount();
         }
 
-        /** CPU 网格快照读取冻结光场，不允许回到仍可变化的 owner 引擎。 */
+        /// CPU 网格快照读取冻结光场，不允许回到仍可变化的 owner 引擎。
         int lightAt(long position) {
             return light.get(position);
         }
 
-        /** 已冻结的直接发光值用于排除光源方块自身的遮罩几何。 */
+        /// 已冻结的直接发光值用于排除光源方块自身的遮罩几何。
         int directEmissionAt(long position) {
             return directEmissions.get(position);
         }
@@ -33,9 +29,7 @@ final class RgbLightEngine {
         }
     }
 
-    /**
-     * 提交给 worker 的只读输入。base 使用冻结 section 视图，变化位置数组由构造器防御性复制。
-     */
+    /// 提交给 worker 的只读输入。base 使用冻结 section 视图，变化位置数组由构造器防御性复制。
     static final class PendingWork {
         private final ChunkSnapshot base;
         private final long[] changedPositions;
@@ -50,7 +44,7 @@ final class RgbLightEngine {
             return changedPositions.length;
         }
 
-        /** 仅供同包快照捕获顺序读取；返回的私有视图不得修改或保留。 */
+        /// 仅供同包快照捕获顺序读取；返回的私有视图不得修改或保留。
         long[] changedPositions() {
             return changedPositions;
         }
@@ -64,9 +58,7 @@ final class RgbLightEngine {
         }
     }
 
-    /**
-     * worker 完成的一代 RGB 候选。候选在发布前与 owner 引擎完全隔离。
-     */
+    /// worker 完成的一代 RGB 候选。候选在发布前与 owner 引擎完全隔离。
     static final class Candidate {
         private final ChunkSnapshot snapshot;
         private final Stats stats;
@@ -97,10 +89,10 @@ final class RgbLightEngine {
 
         int emission(long pos);
 
-        /** 返回 1..15 的衰减值；公共面完全遮光时返回 16。 */
+        /// 返回 1..15 的衰减值；公共面完全遮光时返回 16。
         int attenuation(long from, long to, int direction);
 
-        /** 捕获域边缘来自未变化区域的冻结 RGB；同步 live access 默认没有显式边界。 */
+        /// 捕获域边缘来自未变化区域的冻结 RGB；同步 live access 默认没有显式边界。
         default void forEachBoundarySeed(BoundarySeedConsumer consumer) {
             Objects.requireNonNull(consumer, "consumer");
         }
@@ -118,15 +110,11 @@ final class RgbLightEngine {
         }
     }
 
-    /**
-     * owner 线程分帧传播的一次切片结果。未完成时 CPU 光场仍只属于 staging，调用方不得
-     * 排空 dirty section 或切换 GPU generation；完成后才可把累计统计与完整光场一起发布。
-     */
-    record SliceResult(boolean complete, Stats stats) {
-    }
+    /// owner 线程分帧传播的一次切片结果。未完成时 CPU 光场仍只属于 staging，调用方不得
+    /// 排空 dirty section 或切换 GPU generation；完成后才可把累计统计与完整光场一起发布。
+    record SliceResult(boolean complete, Stats stats) {}
 
-    private record PhaseResult(boolean complete, long steps) {
-    }
+    private record PhaseResult(boolean complete, long steps) {}
 
     private final RgbLightVolume volume = new RgbLightVolume();
     private final RgbLightVolume directEmissions = new RgbLightVolume(false);
@@ -149,13 +137,11 @@ final class RgbLightEngine {
         markBlockMeshDirty(pos);
     }
 
-    /**
-     * 记录仅影响模型几何、不影响 RGB 传播的变化。
-     *
-     * <p>该入口不得写入 {@link #changedBlocks}，否则一个方块实体的纹理或连接模型刷新
-     * 也会触发减光/增光遍历。只标记当前 section，以及方块恰好位于 section 面、棱或角
-     * 边界时可能通过面角采样引用它的相邻 section。</p>
-     */
+    /// 记录仅影响模型几何、不影响 RGB 传播的变化。
+    ///
+    /// 该入口不得写入 [#changedBlocks]，否则一个方块实体的纹理或连接模型刷新
+    /// 也会触发减光/增光遍历。只标记当前 section，以及方块恰好位于 section 面、棱或角
+    /// 边界时可能通过面角采样引用它的相邻 section。
     void queueMeshChange(long pos) {
         markBlockMeshDirty(pos);
     }
@@ -168,7 +154,7 @@ final class RgbLightEngine {
         return changedBlocks.size() + decreaseQueue.size() + increaseQueue.size();
     }
 
-    /** 只有入口、减光和增光三个队列都为空时，当前光场才允许写入可恢复缓存。 */
+    /// 只有入口、减光和增光三个队列都为空时，当前光场才允许写入可恢复缓存。
     boolean isPropagationSettled() {
         return changedBlocks.isEmpty() && decreaseQueue.isEmpty() && increaseQueue.isEmpty();
     }
@@ -302,19 +288,15 @@ final class RgbLightEngine {
         return new ChunkSnapshot(volume.snapshotAll(), directEmissions.snapshotAll());
     }
 
-    /**
-     * 捕获当前已发布光场和尚未处理的方块变化，但不清空 owner 队列。
-     *
-     * <p>因此 worker 运行期间若又收到变化，owner 仍保留完整事实；旧任务会被 revision 门控
-     * 丢弃，下一次捕获自然包含合并后的全部变化。</p>
-     */
+    /// 捕获当前已发布光场和尚未处理的方块变化，但不清空 owner 队列。
+    ///
+    /// 因此 worker 运行期间若又收到变化，owner 仍保留完整事实；旧任务会被 revision 门控
+    /// 丢弃，下一次捕获自然包含合并后的全部变化。
     PendingWork snapshotPendingWork() {
         return new PendingWork(snapshotAll(), changedBlocks.toLongArray());
     }
 
-    /**
-     * 在任务私有引擎上计算 RGB candidate。该方法不会访问或修改全局引擎。
-     */
+    /// 在任务私有引擎上计算 RGB candidate。该方法不会访问或修改全局引擎。
     static Candidate buildCandidate(PendingWork work, Access access) {
         return buildCandidate(work, access, () -> false);
     }
@@ -335,9 +317,7 @@ final class RgbLightEngine {
         return new Candidate(candidate.snapshotAll(), stats, dirtySections);
     }
 
-    /**
-     * 在 owner 线程一次采用完整 candidate，不在发布点重新执行传播。
-     */
+    /// 在 owner 线程一次采用完整 candidate，不在发布点重新执行传播。
     void publishCandidate(Candidate candidate) {
         LongOpenHashSet ownerDirtySections = new LongOpenHashSet(dirtyMeshSections);
         clear();
@@ -360,27 +340,23 @@ final class RgbLightEngine {
         replacedLightSections.forEach(this::markLightSectionDirty);
     }
 
-    /**
-     * CPU 光场与对应 GPU 网格都精确命中时直接激活不可变状态。
-     *
-     * <p>调用方必须已经证明 GPU cache 中存在同一 exact identity 的完整有效网格；只有
-     * 这种成对命中才允许丢弃旧传播队列与 dirty 集合。若 GPU 侧缺失或失效，必须改用
-     * {@link #restoreAll(ChunkSnapshot)}，让渲染层重建网格。</p>
-     */
+    /// CPU 光场与对应 GPU 网格都精确命中时直接激活不可变状态。
+    ///
+    /// 调用方必须已经证明 GPU cache 中存在同一 exact identity 的完整有效网格；只有
+    /// 这种成对命中才允许丢弃旧传播队列与 dirty 集合。若 GPU 侧缺失或失效，必须改用
+    /// [#restoreAll(ChunkSnapshot)]，让渲染层重建网格。
     void activateAllWithoutMeshInvalidation(ChunkSnapshot snapshot) {
         clear();
         volume.replaceAll(snapshot.light);
         directEmissions.replaceAll(snapshot.directEmissions);
     }
 
-    /**
-     * GPU staging 被新 revision 取消时，把已经完成的整批 CPU 候选接回 owner，并保留取消后
-     * 已排队的方块/模型变化。下一轮传播因此从“完整候选 + 新增 delta”继续，而不是退回旧代后
-     * 只处理 delta，后者会永久丢失刚完成的大批量目标。
-     *
-     * <p>该入口只用于 CPU 候选已经收敛、owner 尚未开始处理新增变化的 staging 窗口；减光和
-     * 增光队列此时必须为空，新变化仍停留在 {@link #changedBlocks}。</p>
-     */
+    /// GPU staging 被新 revision 取消时，把已经完成的整批 CPU 候选接回 owner，并保留取消后
+    /// 已排队的方块/模型变化。下一轮传播因此从“完整候选 + 新增 delta”继续，而不是退回旧代后
+    /// 只处理 delta，后者会永久丢失刚完成的大批量目标。
+    ///
+    /// 该入口只用于 CPU 候选已经收敛、owner 尚未开始处理新增变化的 staging 窗口；减光和
+    /// 增光队列此时必须为空，新变化仍停留在 [#changedBlocks]。
     void rebasePendingChanges(ChunkSnapshot snapshot) {
         if (!decreaseQueue.isEmpty() || !increaseQueue.isEmpty()) {
             throw new IllegalStateException("Cannot reset the GPU staging CPU base while propagation queues are active");
@@ -394,15 +370,13 @@ final class RgbLightEngine {
         dirtyMeshSections.addAll(pendingMeshSections);
     }
 
-    /**
-     * 将已收敛光场直接切换到规范全零状态。
-     *
-     * <p>只有上层已经用完整的已加载域光源索引证明“当前没有任何直射彩光源”，并且没有
-     * 待恢复/待扫描区块时才能调用。此时继续执行 decrease BFS 的数学结果必然仍是全零，
-     * 因而可以清空光场和传播队列；但旧光场覆盖过的 section 及其 26 个相邻 section 仍必须
-     * 标脏，让渲染层一次性撤销旧 VBO。调用前由方块/模型回调积累的 dirty section 也必须
-     * 保留，否则灯笼替换为空气时可能留下旧几何。</p>
-     */
+    /// 将已收敛光场直接切换到规范全零状态。
+    ///
+    /// 只有上层已经用完整的已加载域光源索引证明“当前没有任何直射彩光源”，并且没有
+    /// 待恢复/待扫描区块时才能调用。此时继续执行 decrease BFS 的数学结果必然仍是全零，
+    /// 因而可以清空光场和传播队列；但旧光场覆盖过的 section 及其 26 个相邻 section 仍必须
+    /// 标脏，让渲染层一次性撤销旧 VBO。调用前由方块/模型回调积累的 dirty section 也必须
+    /// 保留，否则灯笼替换为空气时可能留下旧几何。
     Stats clearToCanonicalEmpty() {
         LongOpenHashSet pendingModelSections = new LongOpenHashSet(dirtyMeshSections);
         LongOpenHashSet replacedLightSections = new LongOpenHashSet();
@@ -429,10 +403,8 @@ final class RgbLightEngine {
         return result.stats();
     }
 
-    /**
-     * 在 owner 线程执行一个有界传播切片。时间预算只限制本次调用，不限制最终工作量；
-     * 队列会原样保留到下一帧，直至得到与一次性 {@link #process(Access)} 相同的收敛结果。
-     */
+    /// 在 owner 线程执行一个有界传播切片。时间预算只限制本次调用，不限制最终工作量；
+    /// 队列会原样保留到下一帧，直至得到与一次性 [#process(Access)] 相同的收敛结果。
     SliceResult processSlice(Access access, long budgetNanos) {
         if (budgetNanos <= 0L) {
             throw new IllegalArgumentException("budgetNanos must be positive");
@@ -449,8 +421,7 @@ final class RgbLightEngine {
         int checked = 0;
         LongIterator changedIterator = changedBlocks.iterator();
         while (changedIterator.hasNext()) {
-            if (checked != 0 && (checked & 63) == 0
-                    && shouldYield(cancellation, deadlineNanos)) {
+            if (checked != 0 && (checked & 63) == 0 && shouldYield(cancellation, deadlineNanos)) {
                 return incompleteSlice(checked, 0L, 0L);
             }
             long pos = changedIterator.nextLong();
@@ -551,8 +522,7 @@ final class RgbLightEngine {
         long steps = 0;
         long dequeued = 0;
         while (!decreaseQueue.isEmpty()) {
-            if (dequeued != 0L && (dequeued & 63L) == 0L
-                    && shouldYield(cancellation, deadlineNanos)) {
+            if (dequeued != 0L && (dequeued & 63L) == 0L && shouldYield(cancellation, deadlineNanos)) {
                 return new PhaseResult(false, steps);
             }
             long pos = decreaseQueue.dequeueLong();
@@ -599,8 +569,7 @@ final class RgbLightEngine {
         long steps = 0;
         long dequeued = 0;
         while (!increaseQueue.isEmpty()) {
-            if (dequeued != 0L && (dequeued & 63L) == 0L
-                    && shouldYield(cancellation, deadlineNanos)) {
+            if (dequeued != 0L && (dequeued & 63L) == 0L && shouldYield(cancellation, deadlineNanos)) {
                 return new PhaseResult(false, steps);
             }
             long pos = increaseQueue.dequeueLong();
@@ -739,5 +708,4 @@ final class RgbLightEngine {
     private static long chunkKey(int chunkX, int chunkZ) {
         return (long) chunkZ << 32 | chunkX & 0xFFFF_FFFFL;
     }
-
 }

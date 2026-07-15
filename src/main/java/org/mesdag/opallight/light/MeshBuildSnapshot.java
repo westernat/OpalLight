@@ -1,11 +1,6 @@
 package org.mesdag.opallight.light;
 
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.ByteBufferBuilder;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.MeshData;
-import com.mojang.blaze3d.vertex.VertexBuffer;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.*;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.resources.model.BakedModel;
@@ -20,13 +15,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 
-/**
- * CPU 网格 worker 的完整不可变输入。
- *
- * <p>渲染线程先从复制后的方块状态调色板解析模型、最终 ModelData 和六个面的可见性，worker
- * 只读取派生后的候选表。类中刻意不保存可变客户端世界、客户端单例、方块实体、世界访问器
- * 或共享模型缓存，因此取消、换世界和资源重载后不会从后台继续读取可变游戏状态。</p>
- */
+/// CPU 网格 worker 的完整不可变输入。
+///
+/// 渲染线程先从复制后的方块状态调色板解析模型、最终 ModelData 和六个面的可见性，worker
+/// 只读取派生后的候选表。类中刻意不保存可变客户端世界、客户端单例、方块实体、世界访问器
+/// 或共享模型缓存，因此取消、换世界和资源重载后不会从后台继续读取可变游戏状态。
 final class MeshBuildSnapshot {
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final long MAX_WORKER_RESULT_BYTES = 64L * 1024L * 1024L;
@@ -220,8 +213,7 @@ final class MeshBuildSnapshot {
     ) {
         int[] vertices = quad.getVertices();
         int directionIndex = quad.getDirection().get3DDataValue();
-        if (!candidate.faceHasLight(directionIndex)
-                || !LightMaskMeshPrefilter.isBoundaryQuad(vertices, directionIndex)) {
+        if (!candidate.faceHasLight(directionIndex) || LightMaskMeshPrefilter.notBoundaryQuad(vertices, directionIndex)) {
             return;
         }
         for (int vertex = 0; vertex < 4; vertex++) {
@@ -230,11 +222,7 @@ final class MeshBuildSnapshot {
             float y = Float.intBitsToFloat(vertices[offset + 1]);
             float z = Float.intBitsToFloat(vertices[offset + 2]);
             candidate.smoothColor(directionIndex, x, y, z, smoothColor);
-            builder.addVertex(
-                            worldX + x,
-                            worldY + y,
-                            worldZ + z
-                    )
+            builder.addVertex(worldX + x, worldY + y, worldZ + z)
                     .setColor(smoothColor[0], smoothColor[1], smoothColor[2], 1.0F)
                     .setUv(
                             Float.intBitsToFloat(vertices[offset + 4]),
@@ -271,7 +259,7 @@ final class MeshBuildSnapshot {
         }
     }
 
-    /** worker 结果；只含尚未上传的原生顶点内存，绝不包含 OpenGL 对象。 */
+    /// worker 结果；只含尚未上传的原生顶点内存，绝不包含 OpenGL 对象。
     static final class Result implements AutoCloseable {
         private final Long2ObjectOpenHashMap<BuiltSection> sections;
         private boolean claimed;
@@ -297,7 +285,7 @@ final class MeshBuildSnapshot {
         }
     }
 
-    /** 单个 section 的 CPU 顶点数据；上传和关闭由 Render thread 的 staging 阶段负责。 */
+    /// 单个 section 的 CPU 顶点数据；上传和关闭由 Render thread 的 staging 阶段负责。
     static final class BuiltSection implements AutoCloseable {
         private final MeshData mesh;
         private final ByteBufferBuilder bytes;
@@ -342,11 +330,10 @@ final class MeshBuildSnapshot {
         }
     }
 
-    /** 整代 CPU 原生内存超过预算时，调用方改走有界的逐片构建/上传回退。 */
+    /// 整代 CPU 原生内存超过预算时，调用方改走有界的逐片构建/上传回退。
     static final class MeshBudgetExceededException extends RuntimeException {
         private MeshBudgetExceededException() {
             super("CPU mesh candidate exceeds 64 MiB and requires exact streaming fallback");
         }
     }
-
 }

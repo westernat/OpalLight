@@ -7,7 +7,7 @@ import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.function.LongFunction;
 
-/** 从一个不可变发布代派生的写时复制 RGB 候选态。 */
+/// 从一个不可变发布代派生的写时复制 RGB 候选态。
 final class MutableRgbCandidate {
     private final FrozenRgbState base;
     private final ComponentCandidate light;
@@ -39,7 +39,7 @@ final class MutableRgbCandidate {
         light.forEachNonZero(sectionKey, consumer);
     }
 
-    /** 删除指定 chunk 的传播光 section，并报告位于 X/Z 外缘上的非零值。 */
+    /// 删除指定 chunk 的传播光 section，并报告位于 X/Z 外缘上的非零值。
     void removeLightChunk(int chunkX, int chunkZ, FrozenRgbState.LightConsumer removedBoundary) {
         ensureWritable();
         light.removeChunk(chunkX, chunkZ, removedBoundary);
@@ -63,15 +63,17 @@ final class MutableRgbCandidate {
         }
     }
 
-    /** 单个传播分量的 base+overlay；删除表是对 base section 的 tombstone。 */
+    /// 单个传播分量的 base+overlay；删除表是对 base section 的 tombstone。
     private static final class ComponentCandidate {
         private final LongFunction<RgbSectionView> baseLookup;
         private final Consumer<LongConsumer> baseKeyTraversal;
         private final Long2ObjectOpenHashMap<MutableSection> modified = new Long2ObjectOpenHashMap<>();
         private final LongOpenHashSet removed = new LongOpenHashSet();
 
-        private ComponentCandidate(LongFunction<RgbSectionView> baseLookup,
-                                   Consumer<LongConsumer> baseKeyTraversal) {
+        private ComponentCandidate(
+                LongFunction<RgbSectionView> baseLookup,
+                Consumer<LongConsumer> baseKeyTraversal
+        ) {
             this.baseLookup = baseLookup;
             this.baseKeyTraversal = baseKeyTraversal;
         }
@@ -183,10 +185,8 @@ final class MutableRgbCandidate {
 
     }
 
-    /**
-     * 仅候选态持有写能力。freeze 后外层 candidate 被 sealed；FrozenRgbState 只把它
-     * 当作 {@link RgbSectionView} 保存，因此不会暴露此处的私有 set 方法。
-     */
+    /// 仅候选态持有写能力。freeze 后外层 candidate 被 sealed；FrozenRgbState 只把它
+    /// 当作 [RgbSectionView] 保存，因此不会暴露此处的私有 set 方法。
     private static final class MutableSection implements RgbSectionView {
         private final short[] values;
         private int nonZeroCount;

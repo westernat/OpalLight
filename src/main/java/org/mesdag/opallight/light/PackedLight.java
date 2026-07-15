@@ -1,6 +1,6 @@
 package org.mesdag.opallight.light;
 
-/** 将三个无符号四位光照通道压入 int 的低十二位。 */
+/// 将三个无符号四位光照通道压入 int 的低十二位。
 final class PackedLight {
     private static final int CHANNEL_MASK = 15;
 

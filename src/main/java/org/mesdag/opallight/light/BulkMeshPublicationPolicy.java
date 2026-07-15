@@ -12,8 +12,8 @@ final class BulkMeshPublicationPolicy {
             @Nullable Object activeToken,
             boolean pairedCacheHit
     ) {
-        return requestedToken != null
-                && !requestedToken.equals(activeToken)
-                && !pairedCacheHit;
+        return requestedToken != null &&
+                !requestedToken.equals(activeToken) &&
+                !pairedCacheHit;
     }
 }

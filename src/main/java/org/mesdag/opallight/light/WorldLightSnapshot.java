@@ -8,13 +8,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.LongToIntFunction;
 
-/**
- * RGB worker 使用的不可变世界视图。
- *
- * <p>快照只暴露传播算法需要的三项数据：位置是否属于捕获域、变化位置的直接发光值，
- * 以及相邻方块间的衰减。对象内没有 {@code ClientLevel} 或 {@code Minecraft} 引用；原版
- * 方块状态适配被封装在任务私有的 {@link SnapshotBlockAndTintGetter} 中。</p>
- */
+/// RGB worker 使用的不可变世界视图。
+///
+/// 快照只暴露传播算法需要的三项数据：位置是否属于捕获域、变化位置的直接发光值，
+/// 以及相邻方块间的衰减。对象内没有 `ClientLevel` 或 `Minecraft` 引用；原版
+/// 方块状态适配被封装在任务私有的 [SnapshotBlockAndTintGetter] 中。
 final class WorldLightSnapshot implements RgbLightEngine.Access {
     @FunctionalInterface
     interface AttenuationAccess {
@@ -53,10 +51,8 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         this.captureNanos = captureNanos;
     }
 
-    /**
-     * 把任意数量的方块变化先合并为 changed section，再增加一圈 section halo。
-     * 一圈至少覆盖 15 格 RGB 传播闭包，并为边界面遮挡计算保留额外方块状态。
-     */
+    /// 把任意数量的方块变化先合并为 changed section，再增加一圈 section halo。
+    /// 一圈至少覆盖 15 格 RGB 传播闭包，并为边界面遮挡计算保留额外方块状态。
     static Optional<LongOpenHashSet> sectionsToCaptureWithinBudget(
             long[] changedPositions,
             LongSet loadedChunks,
@@ -104,10 +100,8 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         return Optional.of(result);
     }
 
-    /**
-     * 提取捕获域外表面的旧 RGB。halo 让这些位置离本批变化至少 16 格，可安全作为
-     * decrease 完成后的边界重新灌入种子。
-     */
+    /// 提取捕获域外表面的旧 RGB。halo 让这些位置离本批变化至少 16 格，可安全作为
+    /// decrease 完成后的边界重新灌入种子。
     static Long2IntOpenHashMap captureBoundarySeeds(
             LongSet capturedSections,
             LongToIntFunction baseLight
@@ -146,9 +140,9 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
     @Override
     public boolean isLoaded(long pos) {
         int y = PackedPosition.y(pos);
-        return y >= minBuildHeight
-                && y < maxBuildHeight
-                && capturedSections.contains(PackedPosition.sectionKey(pos));
+        return y >= minBuildHeight &&
+                y < maxBuildHeight &&
+                capturedSections.contains(PackedPosition.sectionKey(pos));
     }
 
     @Override
@@ -163,8 +157,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
 
     @Override
     public void forEachBoundarySeed(RgbLightEngine.Access.BoundarySeedConsumer consumer) {
-        boundarySeeds.long2IntEntrySet().forEach(entry ->
-                consumer.accept(entry.getLongKey(), entry.getIntValue()));
+        boundarySeeds.long2IntEntrySet().forEach(entry -> consumer.accept(entry.getLongKey(), entry.getIntValue()));
     }
 
     int capturedSectionCount() {
@@ -179,9 +172,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         return (long) chunkZ << 32 | chunkX & 0xFFFF_FFFFL;
     }
 
-    private static void captureXFace(
-            Long2IntOpenHashMap seeds, LongToIntFunction baseLight, int x, int minY, int minZ
-    ) {
+    private static void captureXFace(Long2IntOpenHashMap seeds, LongToIntFunction baseLight, int x, int minY, int minZ) {
         for (int y = minY; y < minY + 16; y++) {
             for (int z = minZ; z < minZ + 16; z++) {
                 captureSeed(seeds, baseLight, PackedPosition.pack(x, y, z));
@@ -189,9 +180,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         }
     }
 
-    private static void captureYFace(
-            Long2IntOpenHashMap seeds, LongToIntFunction baseLight, int minX, int y, int minZ
-    ) {
+    private static void captureYFace(Long2IntOpenHashMap seeds, LongToIntFunction baseLight, int minX, int y, int minZ) {
         for (int x = minX; x < minX + 16; x++) {
             for (int z = minZ; z < minZ + 16; z++) {
                 captureSeed(seeds, baseLight, PackedPosition.pack(x, y, z));
@@ -199,9 +188,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         }
     }
 
-    private static void captureZFace(
-            Long2IntOpenHashMap seeds, LongToIntFunction baseLight, int minX, int minY, int z
-    ) {
+    private static void captureZFace(Long2IntOpenHashMap seeds, LongToIntFunction baseLight, int minX, int minY, int z) {
         for (int x = minX; x < minX + 16; x++) {
             for (int y = minY; y < minY + 16; y++) {
                 captureSeed(seeds, baseLight, PackedPosition.pack(x, y, z));
@@ -209,9 +196,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         }
     }
 
-    private static void captureSeed(
-            Long2IntOpenHashMap seeds, LongToIntFunction baseLight, long pos
-    ) {
+    private static void captureSeed(Long2IntOpenHashMap seeds, LongToIntFunction baseLight, long pos) {
         int light = baseLight.applyAsInt(pos);
         if (light != 0) {
             seeds.put(pos, light);

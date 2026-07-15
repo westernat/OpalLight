@@ -56,7 +56,7 @@ final class PackedPosition {
     }
 
     static int sectionX(long sectionKey) {
-        return (int) (sectionKey << 0 >> 42);
+        return (int) (sectionKey >> 42);
     }
 
     static int sectionY(long sectionKey) {

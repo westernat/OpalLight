@@ -6,13 +6,11 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 
 import java.util.function.LongConsumer;
 
-/**
- * 由 Minecraft 原生尺寸区段组成的稀疏光照存储。
- *
- * <p>已经发布或进入快照的 section 由 {@link FrozenRgbState} 持有；后续写入通过
- * {@link MutableRgbCandidate} 对首次修改的 section 做一次写时复制。这样全量快照和
- * 整代恢复只复制稀疏索引，不再深复制每个 {@code short[4096]}。</p>
- */
+/// 由 Minecraft 原生尺寸区段组成的稀疏光照存储。
+///
+/// 已经发布或进入快照的 section 由 [FrozenRgbState] 持有；后续写入通过
+/// [MutableRgbCandidate] 对首次修改的 section 做一次写时复制。这样全量快照和
+/// 整代恢复只复制稀疏索引，不再深复制每个 `short[4096]`。
 final class RgbLightVolume {
     interface LightConsumer {
         void accept(long pos, int light);
@@ -121,16 +119,13 @@ final class RgbLightVolume {
         return new ChunkSnapshot(published);
     }
 
-    /**
-     * 合并一个区块子快照。区块流式恢复不是整代替换，仍逐个非零值写入候选态；
-     * 全量 generation 命中应使用 {@link #replaceAll(ChunkSnapshot)} 的 O(section index) 路径。
-     */
+    /// 合并一个区块子快照。区块流式恢复不是整代替换，仍逐个非零值写入候选态；
+    /// 全量 generation 命中应使用 [#replaceAll(ChunkSnapshot)] 的 O(section index) 路径。
     void restoreChunk(ChunkSnapshot snapshot) {
-        snapshot.state.forEachLightSectionKey(sectionKey ->
-                snapshot.state.forEachNonZeroLight(sectionKey, (pos, value) -> set(pos, value)));
+        snapshot.state.forEachLightSectionKey(sectionKey -> snapshot.state.forEachNonZeroLight(sectionKey, this::set));
     }
 
-    /** 整体激活一个不可变状态；不复制 RGB 载荷，也不在此处伪造 dirty section。 */
+    /// 整体激活一个不可变状态；不复制 RGB 载荷，也不在此处伪造 dirty section。
     void replaceAll(ChunkSnapshot snapshot) {
         published = snapshot.state;
         mutable = published.mutableCandidate();
@@ -141,9 +136,7 @@ final class RgbLightVolume {
         mutable.removeLightChunk(chunkX, chunkZ, removedBoundary == null
                 ? null
                 : removedBoundary::accept);
-        increaseQueued.keySet().removeIf(sectionKey ->
-                PackedPosition.sectionX(sectionKey) == chunkX
-                        && PackedPosition.sectionZ(sectionKey) == chunkZ);
+        increaseQueued.keySet().removeIf(sectionKey -> PackedPosition.sectionX(sectionKey) == chunkX && PackedPosition.sectionZ(sectionKey) == chunkZ);
     }
 
     void removeChunks(LongSet chunkKeys, LightConsumer removedBoundary) {
@@ -153,17 +146,16 @@ final class RgbLightVolume {
             mutable.removeLightChunk(chunkX, chunkZ, removedBoundary == null ? null : (pos, light) -> {
                 int localX = PackedPosition.x(pos) & 15;
                 int localZ = PackedPosition.z(pos) & 15;
-                boolean outerBoundary = localX == 0 && !chunkKeys.contains(chunkKey(chunkX - 1, chunkZ))
-                        || localX == 15 && !chunkKeys.contains(chunkKey(chunkX + 1, chunkZ))
-                        || localZ == 0 && !chunkKeys.contains(chunkKey(chunkX, chunkZ - 1))
-                        || localZ == 15 && !chunkKeys.contains(chunkKey(chunkX, chunkZ + 1));
+                boolean outerBoundary = localX == 0 && !chunkKeys.contains(chunkKey(chunkX - 1, chunkZ)) ||
+                        localX == 15 && !chunkKeys.contains(chunkKey(chunkX + 1, chunkZ)) ||
+                        localZ == 0 && !chunkKeys.contains(chunkKey(chunkX, chunkZ - 1)) ||
+                        localZ == 15 && !chunkKeys.contains(chunkKey(chunkX, chunkZ + 1));
                 if (outerBoundary) {
                     removedBoundary.accept(pos, light);
                 }
             });
         }
-        increaseQueued.keySet().removeIf(sectionKey -> chunkKeys.contains(chunkKey(
-                PackedPosition.sectionX(sectionKey), PackedPosition.sectionZ(sectionKey))));
+        increaseQueued.keySet().removeIf(sectionKey -> chunkKeys.contains(chunkKey(PackedPosition.sectionX(sectionKey), PackedPosition.sectionZ(sectionKey))));
     }
 
     void forEachSectionKey(LongConsumer consumer) {
@@ -174,7 +166,7 @@ final class RgbLightVolume {
         mutable.forEachNonZeroLight(sectionKey, consumer::accept);
     }
 
-    /** 在一个传播批次收敛后冻结 active CPU 状态，后续写入自动走 section COW。 */
+    /// 在一个传播批次收敛后冻结 active CPU 状态，后续写入自动走 section COW。
     void freezePublished() {
         published = mutable.freeze();
         mutable = published.mutableCandidate();

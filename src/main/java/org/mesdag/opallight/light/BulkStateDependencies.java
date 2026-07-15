@@ -1,8 +1,8 @@
 package org.mesdag.opallight.light;
 
 import it.unimi.dsi.fastutil.longs.Long2LongMap;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 
 import java.util.Arrays;
 
@@ -19,8 +19,7 @@ import java.util.Arrays;
  * 不能只取四个正交邻居，因为区块角落处的光传播与面可见性同样会依赖对角区块。</p>
  */
 final class BulkStateDependencies {
-    private BulkStateDependencies() {
-    }
+    private BulkStateDependencies() {}
 
     static long[] relevantLoadedChunks(LongSet loadedChunks, LongSet lightSections, long[] sourceChunkKeys) {
         LongOpenHashSet dependencyChunks = new LongOpenHashSet(sourceChunkKeys);

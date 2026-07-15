@@ -90,19 +90,18 @@ public final class LightManager {
      * 不再为每次 4096/65536 更新重新扫描整个客户端视距。
      */
     private static final SourceRegistry SOURCE_REGISTRY = new SourceRegistry();
-    private static final GenerationCoordinator<RgbGenerationKey, AsyncRgbTask, AsyncRgbResult> RGB_COORDINATOR =
-            new GenerationCoordinator<>(
-                    "OpalLight-RgbWorker",
-                    (task, cancellation) -> new AsyncRgbResult(
-                            RgbLightEngine.buildCandidate(
-                                    task.pendingWork, task.worldSnapshot, cancellation::isCancelled
-                            ),
-                            task.bulkIdentity,
-                            task.generationRevisions,
-                            task.identityNanos,
-                            task.worldSnapshot.captureNanos()
-                    )
-            );
+    private static final GenerationCoordinator<RgbGenerationKey, AsyncRgbTask, AsyncRgbResult> RGB_COORDINATOR = new GenerationCoordinator<>(
+            "OpalLight-RgbWorker",
+            (task, cancellation) -> new AsyncRgbResult(
+                    RgbLightEngine.buildCandidate(
+                            task.pendingWork, task.worldSnapshot, cancellation::isCancelled
+                    ),
+                    task.bulkIdentity,
+                    task.generationRevisions,
+                    task.identityNanos,
+                    task.worldSnapshot.captureNanos()
+            )
+    );
     private static final LongOpenHashSet LOADED_CHUNKS = new LongOpenHashSet();
     private static final LongOpenHashSet PENDING_CHUNK_SCANS = new LongOpenHashSet();
     private static final LongOpenHashSet PENDING_CHUNK_UNLOADS = new LongOpenHashSet();
@@ -113,8 +112,7 @@ public final class LightManager {
      * 实际堆占用还包含 section 对象、Map 节点与快照元数据。
      * 淘汰只会让该区块下次重新扫描，不会限制世界规模或彩色光源数量。
      */
-    private static final WeightedLruCache<Long, SoftReference<CachedChunk>> CHUNK_SNAPSHOTS =
-            new WeightedLruCache<>(512, 2_048);
+    private static final WeightedLruCache<Long, SoftReference<CachedChunk>> CHUNK_SNAPSHOTS = new WeightedLruCache<>(512, 2_048);
     private static final Long2LongOpenHashMap PENDING_CHUNK_FINGERPRINTS = new Long2LongOpenHashMap();
     private static final Long2LongOpenHashMap LOADED_CHUNK_FINGERPRINTS = new Long2LongOpenHashMap();
     /*
@@ -124,8 +122,7 @@ public final class LightManager {
      * 约束。淘汰的始终是可重算快照，不会删除 SourceRegistry 中任何真实光源。
      */
     private static final long BULK_STATE_CACHE_BYTES = 128L * 1024L * 1024L;
-    private static final WeightedLruCache<BulkStateIdentity, CachedBulkState> BULK_STATE_SNAPSHOTS =
-            new WeightedLruCache<>(64L, BULK_STATE_CACHE_BYTES);
+    private static final WeightedLruCache<BulkStateIdentity, CachedBulkState> BULK_STATE_SNAPSHOTS = new WeightedLruCache<>(64L, BULK_STATE_CACHE_BYTES);
     private static @Nullable ClientLevel activeLevel;
     private static @Nullable ClientLevelAccess access;
     private static volatile boolean fullRebuildRequested = true;
@@ -769,7 +766,6 @@ public final class LightManager {
             }
             ENGINE.drainDirtyMeshSections(LightMaskMeshCache::markDirty);
             ENGINE.activateAllWithoutMeshInvalidation(activeCpuBeforeBulk);
-            cpuActivationDeferred = true;
         }
         if (bulkCandidate && !asyncDeferred) {
             LightMaskMeshCache.selectBulkState(
@@ -858,10 +854,8 @@ public final class LightManager {
         pendingSnapshotValidationNanos = 0;
     }
 
-    /**
-     * 只允许网格发布器在同一 generation 的 VBO 已经 active 后采用对应 CPU 快照。
-     */
-    static void activatePublishedCpuState(RgbLightEngine.ChunkSnapshot snapshot, long generationId) {
+    /// 只允许网格发布器在同一 generation 的 VBO 已经 active 后采用对应 CPU 快照。
+    static void activatePublishedCpuState(@Nullable RgbLightEngine.ChunkSnapshot snapshot, long generationId) {
         if (snapshot == null) {
             throw new IllegalStateException("Bulk generation is missing its CPU light-field snapshot: " + generationId);
         }
@@ -1087,10 +1081,8 @@ public final class LightManager {
         );
     }
 
-    /**
-     * 规范全零代不依赖“被清除前旧光场覆盖过哪些 section”。只要同一世界会话、规则与模型
-     * 修订一致，任意大批量全清都指向同一个 exact identity，避免不同建筑清空后制造多份零状态。
-     */
+    /// 规范全零代不依赖“被清除前旧光场覆盖过哪些 section”。只要同一世界会话、规则与模型
+    /// 修订一致，任意大批量全清都指向同一个 exact identity，避免不同建筑清空后制造多份零状态。
     private static BulkStateIdentity canonicalEmptyBulkStateIdentity() {
         String dimension = activeLevel.dimension().location().toString();
         long fingerprint = fingerprintMix(
@@ -1111,9 +1103,7 @@ public final class LightManager {
         );
     }
 
-    /**
-     * 返回会影响原版面遮光计算的稳定签名；等价的空气与非遮光灯具得到相同值。
-     */
+    /// 返回会影响原版面遮光计算的稳定签名；等价的空气与非遮光灯具得到相同值。
     private static long propagationSignature(Level level, BlockPos pos, BlockState state) {
         int opacity = Math.max(1, state.getLightBlock(level, pos));
         if (opacity >= 15) {
@@ -1133,13 +1123,11 @@ public final class LightManager {
         return value ^ value >>> 31;
     }
 
-    /**
-     * 生成复合缓存的生命周期修订键。
-     *
-     * <p>光源内容、相关区块及传播签名已经逐项进入 {@link BulkStateIdentity}，不能再放入
-     * 单调递增的 callback 计数，否则 color→air→同一 color 永远无法命中。这里仅保留
-     * 不属于布局身份本身的世界会话、资源规则和模型生命周期。</p>
-     */
+    /// 生成复合缓存的生命周期修订键。
+    ///
+    /// 光源内容、相关区块及传播签名已经逐项进入 [BulkStateIdentity]，不能再放入
+    /// 单调递增的 callback 计数，否则 color→air→同一 color 永远无法命中。这里仅保留
+    /// 不属于布局身份本身的世界会话、资源规则和模型生命周期。
     private static LightGeneration.RevisionKey bulkGenerationRevisions() {
         return new LightGeneration.RevisionKey(
                 levelSessionRevision,
@@ -1151,10 +1139,8 @@ public final class LightManager {
         );
     }
 
-    /**
-     * worker candidate 的完整失效键。单调 revision 只负责拒绝迟到结果；跨批次缓存身份仍由
-     * {@link BulkStateIdentity} 的规范化内容决定，因此不会破坏 color→air→color 热命中。
-     */
+    /// worker candidate 的完整失效键。单调 revision 只负责拒绝迟到结果；跨批次缓存身份仍由
+    /// [BulkStateIdentity] 的规范化内容决定，因此不会破坏 color→air→color 热命中。
     private static RgbGenerationKey currentRgbGenerationKey() {
         return new RgbGenerationKey(
                 levelSessionRevision,
@@ -1171,10 +1157,8 @@ public final class LightManager {
         return RGB_COORDINATOR.hasWork();
     }
 
-    /**
-     * 估算缓存真正长期持有的 CPU 净载荷：两套 short section 加精确 identity 数组。
-     * Map/对象头随 JVM 实现变化，不伪装成精确值；固定元数据防止全空布局被按零权重无限堆积。
-     */
+    /// 估算缓存真正长期持有的 CPU 净载荷：两套 short section 加精确 identity 数组。
+    /// Map/对象头随 JVM 实现变化，不伪装成精确值；固定元数据防止全空布局被按零权重无限堆积。
     private static long bulkStateCacheWeight(
             BulkStateIdentity identity,
             RgbLightEngine.ChunkSnapshot snapshot
@@ -1186,9 +1170,7 @@ public final class LightManager {
                 : identityBytes + sectionBytes;
     }
 
-    /**
-     * 跨帧累计 live-world 精确回退；仅在引擎报告完整收敛后才允许对外发布。
-     */
+    /// 跨帧累计 live-world 精确回退；仅在引擎报告完整收敛后才允许对外发布。
     private static final class SlicedRgbFallback {
         private long checkedBlocks;
         private long decreaseSteps;
@@ -1221,8 +1203,7 @@ public final class LightManager {
         }
     }
 
-    private record CachedChunk(long revision, long fingerprint, RgbLightEngine.ChunkSnapshot snapshot) {
-    }
+    private record CachedChunk(long revision, long fingerprint, RgbLightEngine.ChunkSnapshot snapshot) {}
 
     private record RgbGenerationKey(
             long levelSessionRevision,
@@ -1232,8 +1213,7 @@ public final class LightManager {
             long resourceRevision,
             long propagationRevision,
             long visualRevision
-    ) {
-    }
+    ) {}
 
     private record AsyncRgbTask(
             RgbLightEngine.PendingWork pendingWork,
@@ -1241,8 +1221,7 @@ public final class LightManager {
             BulkStateIdentity bulkIdentity,
             LightGeneration.RevisionKey generationRevisions,
             long identityNanos
-    ) {
-    }
+    ) {}
 
     private record AsyncRgbResult(
             RgbLightEngine.Candidate candidate,
@@ -1250,14 +1229,12 @@ public final class LightManager {
             LightGeneration.RevisionKey generationRevisions,
             long identityNanos,
             long captureNanos
-    ) {
-    }
+    ) {}
 
     private record CachedBulkState(
             long resourceRevision,
             RgbLightEngine.ChunkSnapshot snapshot
-    ) {
-    }
+    ) {}
 
     /**
      * Map 的 {@code hashCode} 只用于定位，{@link #equals(Object)} 还会比较排序后的相关区块、
@@ -1311,13 +1288,13 @@ public final class LightManager {
             if (!(value instanceof BulkStateIdentity other)) {
                 return false;
             }
-            return dimension.equals(other.dimension)
-                    && propagationRevision == other.propagationRevision
-                    && visualRevision == other.visualRevision
-                    && Arrays.equals(loadedChunks, other.loadedChunks)
-                    && Arrays.equals(chunkFingerprints, other.chunkFingerprints)
-                    && Arrays.equals(sourcePositions, other.sourcePositions)
-                    && Arrays.equals(sourceColors, other.sourceColors);
+            return dimension.equals(other.dimension) &&
+                    propagationRevision == other.propagationRevision &&
+                    visualRevision == other.visualRevision &&
+                    Arrays.equals(loadedChunks, other.loadedChunks) &&
+                    Arrays.equals(chunkFingerprints, other.chunkFingerprints) &&
+                    Arrays.equals(sourcePositions, other.sourcePositions) &&
+                    Arrays.equals(sourceColors, other.sourceColors);
         }
 
         @Override

@@ -6,13 +6,11 @@ import org.jetbrains.annotations.Nullable;
 import java.util.function.LongConsumer;
 import java.util.function.LongToIntFunction;
 
-/**
- * 彩光遮罩网格构建前的纯数据预筛。
- *
- * <p>该类故意不依赖 Minecraft 客户端、模型或渲染类型：一方面可在普通 JVM 测试中
- * 穷举验证，另一方面也明确限定了预筛只能依据已经收敛的 RGB 数据，不能偷读可变世界
- * 或用近似规则代替原有遮挡与模型流程。</p>
- */
+/// 彩光遮罩网格构建前的纯数据预筛。
+///
+/// 该类故意不依赖 Minecraft 客户端、模型或渲染类型：一方面可在普通 JVM 测试中
+/// 穷举验证，另一方面也明确限定了预筛只能依据已经收敛的 RGB 数据，不能偷读可变世界
+/// 或用近似规则代替原有遮挡与模型流程。
 final class LightMaskMeshPrefilter {
     static final int FACE_COUNT = PackedPosition.DIRECTION_COUNT;
     static final int CORNERS_PER_FACE = 4;
@@ -26,13 +24,11 @@ final class LightMaskMeshPrefilter {
     private LightMaskMeshPrefilter() {
     }
 
-    /**
-     * 判断目标 section 是否可能包含被彩光照到的方块表面。
-     *
-     * <p>面角采样会读取方块周围一格的完整外壳，因此光可以从共享面、棱或角相邻的
-     * section 进入目标 section。这里只检查一格 3×3×3 邻域，不会扩大传播半径。</p>
-     */
-    static boolean sectionCanContainLitSurface(LongSet lightSections, long sectionKey) {
+    /// 判断目标 section 是否可能包含被彩光照到的方块表面。
+    ///
+    /// 面角采样会读取方块周围一格的完整外壳，因此光可以从共享面、棱或角相邻的
+    /// section 进入目标 section。这里只检查一格 3×3×3 邻域，不会扩大传播半径。
+    static boolean sectionCannotContainLitSurface(LongSet lightSections, long sectionKey) {
         int sectionX = PackedPosition.sectionX(sectionKey);
         int sectionY = PackedPosition.sectionY(sectionKey);
         int sectionZ = PackedPosition.sectionZ(sectionKey);
@@ -42,15 +38,15 @@ final class LightMaskMeshPrefilter {
                     if (lightSections.contains(PackedPosition.sectionKey(
                             sectionX + offsetX, sectionY + offsetY, sectionZ + offsetZ
                     ))) {
-                        return true;
+                        return false;
                     }
                 }
             }
         }
-        return false;
+        return true;
     }
 
-    /** 遍历一个 section 周围一格的 27 个唯一 section，供整片光场替换时反向失效。 */
+    /// 遍历一个 section 周围一格的 27 个唯一 section，供整片光场替换时反向失效。
     static void forEachSectionSamplingHalo(long sectionKey, LongConsumer consumer) {
         int sectionX = PackedPosition.sectionX(sectionKey);
         int sectionY = PackedPosition.sectionY(sectionKey);
@@ -66,12 +62,10 @@ final class LightMaskMeshPrefilter {
         }
     }
 
-    /**
-     * 遍历一个光照体素可能影响的网格 section。
-     *
-     * <p>内部体素只影响自身 section；位于面、棱或角边界时，对三个轴的边界偏移取
-     * 笛卡尔积，分别得到 2、4 或 8 个 section，避免普通更新无条件放大到 27 片。</p>
-     */
+    /// 遍历一个光照体素可能影响的网格 section。
+    ///
+    /// 内部体素只影响自身 section；位于面、棱或角边界时，对三个轴的边界偏移取
+    /// 笛卡尔积，分别得到 2、4 或 8 个 section，避免普通更新无条件放大到 27 片。
     static void forEachBlockMeshSection(long packedPos, LongConsumer consumer) {
         long sectionKey = PackedPosition.sectionKey(packedPos);
         int sectionX = PackedPosition.sectionX(sectionKey);
@@ -97,12 +91,10 @@ final class LightMaskMeshPrefilter {
         }
     }
 
-    /**
-     * 一次读取方块周围的 26 个外壳体素，并把它们分发到六个面的四个角点。
-     *
-     * <p>每个角点只累计该面外侧切平面上的 2×2 样本，固定包含四个零或非零值。这样既与
-     * 原版完整边界面的平滑采样方向一致，也不会把实体内部或墙体背面的光混入正面。</p>
-     */
+    /// 一次读取方块周围的 26 个外壳体素，并把它们分发到六个面的四个角点。
+    ///
+    /// 每个角点只累计该面外侧切平面上的 2×2 样本，固定包含四个零或非零值。这样既与
+    /// 原版完整边界面的平滑采样方向一致，也不会把实体内部或墙体背面的光混入正面。
     static void sampleFaceCorners(LongToIntFunction lightLookup, long packedPos, int[] output) {
         if (output.length < FACE_SAMPLE_COUNT) {
             throw new IllegalArgumentException("Face-light output must contain all 24 face corners");
@@ -142,27 +134,27 @@ final class LightMaskMeshPrefilter {
         requireFaceSamples(faceSamples);
         requireDirection(direction);
         int start = direction * CORNERS_PER_FACE;
-        return faceSamples[start] != 0
-                || faceSamples[start + 1] != 0
-                || faceSamples[start + 2] != 0
-                || faceSamples[start + 3] != 0;
+        return faceSamples[start] != 0 ||
+                faceSamples[start + 1] != 0 ||
+                faceSamples[start + 2] != 0 ||
+                faceSamples[start + 3] != 0;
     }
 
-    static boolean anyFaceHasLight(int[] faceSamples) {
+    static boolean allFaceNoLight(int[] faceSamples) {
         requireFaceSamples(faceSamples);
         for (int sample : faceSamples) {
             if (sample != 0) {
-                return true;
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
-    /** 仅接受位于指定方块边界平面内且数据完整有限的 quad，未知或越界几何不生成彩光遮罩。 */
-    static boolean isBoundaryQuad(@Nullable int[] vertices, int direction) {
+    /// 仅接受位于指定方块边界平面内且数据完整有限的 quad，未知或越界几何不生成彩光遮罩。
+    static boolean notBoundaryQuad(int @Nullable [] vertices, int direction) {
         requireDirection(direction);
         if (vertices == null || vertices.length < VERTEX_STRIDE * 4) {
-            return false;
+            return true;
         }
         float expectedPlane = direction == 1 || direction == 3 || direction == 5 ? 1.0F : 0.0F;
         for (int vertex = 0; vertex < 4; vertex++) {
@@ -172,10 +164,10 @@ final class LightMaskMeshPrefilter {
             float z = Float.intBitsToFloat(vertices[offset + 2]);
             float u = Float.intBitsToFloat(vertices[offset + 4]);
             float v = Float.intBitsToFloat(vertices[offset + 5]);
-            if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z)
-                    || !Float.isFinite(u) || !Float.isFinite(v)
-                    || !insideUnitInterval(x) || !insideUnitInterval(y) || !insideUnitInterval(z)) {
-                return false;
+            if (!Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(z) ||
+                    !Float.isFinite(u) || !Float.isFinite(v) ||
+                    outsideUnitInterval(x) || outsideUnitInterval(y) || outsideUnitInterval(z)) {
+                return true;
             }
             float normal = switch (direction) {
                 case 0, 1 -> y;
@@ -184,13 +176,13 @@ final class LightMaskMeshPrefilter {
                 default -> throw new AssertionError("Unreachable direction");
             };
             if (Math.abs(normal - expectedPlane) > FACE_EPSILON) {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
-    /** 按顶点在面内的两个切轴坐标，对该面四个角点做双线性 RGB 插值。 */
+    /// 按顶点在面内的两个切轴坐标，对该面四个角点做双线性 RGB 插值。
     static void smoothFaceColorAtVertex(
             int[] faceSamples,
             int direction,
@@ -256,8 +248,8 @@ final class LightMaskMeshPrefilter {
         return Math.max(0.0F, Math.min(1.0F, value));
     }
 
-    private static boolean insideUnitInterval(float value) {
-        return value >= -FACE_EPSILON && value <= 1.0F + FACE_EPSILON;
+    private static boolean outsideUnitInterval(float value) {
+        return value < -FACE_EPSILON || value > 1.0F + FACE_EPSILON;
     }
 
     private static void requireFaceSamples(int[] faceSamples) {
@@ -271,5 +263,4 @@ final class LightMaskMeshPrefilter {
             throw new IllegalArgumentException("direction must be between 0 and 5");
         }
     }
-
 }

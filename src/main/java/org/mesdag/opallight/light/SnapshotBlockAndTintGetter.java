@@ -22,13 +22,10 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Optional;
 
-/**
- * 从客户端主线程复制出的方块状态调色板。
- *
- * <p>类名保留 “BlockAndTintGetter” 是为了 TODO 6 的异步 mesh 快照继续复用同一世界视图；
- * 当前 RGB 阶段只实现原版遮挡算法实际需要的 {@link BlockGetter}，不伪造天空光、方块实体或
- * 生物群系着色。worker 持有的只有复制后的 {@link PalettedContainer}，没有 live level。</p>
- */
+/// 从客户端主线程复制出的方块状态调色板。
+///
+/// 当前 RGB 阶段只实现原版遮挡算法实际需要的 [BlockGetter]，不伪造天空光、方块实体或
+/// 生物群系着色。worker 持有的只有复制后的 [PalettedContainer]，没有 live level。
 final class SnapshotBlockAndTintGetter implements BlockGetter, WorldLightSnapshot.AttenuationAccess {
     @FunctionalInterface
     interface EmissionResolver {
@@ -215,10 +212,8 @@ final class SnapshotBlockAndTintGetter implements BlockGetter, WorldLightSnapsho
         );
     }
 
-    /**
-     * 缓存只由目标方块决定的常见衰减。只有使用遮光形状的半透明方块返回 17，
-     * 继续执行依赖来源面和方向的完整原版形状计算。
-     */
+    /// 缓存只由目标方块决定的常见衰减。只有使用遮光形状的半透明方块返回 17，
+    /// 继续执行依赖来源面和方向的完整原版形状计算。
     private int targetAttenuation(long pos) {
         long sectionKey = PackedPosition.sectionKey(pos);
         byte[] section = attenuationCache.computeIfAbsent(sectionKey, ignored -> new byte[4096]);

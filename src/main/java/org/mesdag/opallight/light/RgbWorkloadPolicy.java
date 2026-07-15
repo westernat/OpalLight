@@ -1,18 +1,13 @@
 package org.mesdag.opallight.light;
 
-/**
- * 只决定 RGB 计算放在 owner 线程还是专用 worker，不限制光源数量或传播结果。
- */
+/// 只决定 RGB 计算放在 owner 线程还是专用 worker，不限制光源数量或传播结果。
 final class RgbWorkloadPolicy {
     private static final long ASYNC_WORK_THRESHOLD = 200_000L;
-    /**
-     * 15 级光源在无遮挡三维曼哈顿空间中最多检查 4991 个位置。
-     * 这里必须按传播体积估算，不能只按方块回调次数估算，否则稀疏光源会绕过分帧保护。
-     */
+    /// 15 级光源在无遮挡三维曼哈顿空间中最多检查 4991 个位置。
+    /// 这里必须按传播体积估算，不能只按方块回调次数估算，否则稀疏光源会绕过分帧保护。
     private static final long MAX_PROPAGATION_VISITS_PER_CHANGE = 4_991L;
 
-    private RgbWorkloadPolicy() {
-    }
+    private RgbWorkloadPolicy() {}
 
     static boolean shouldOffload(
             int changedBlocks,

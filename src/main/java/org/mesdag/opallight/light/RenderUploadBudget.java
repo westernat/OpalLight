@@ -4,12 +4,10 @@ import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 
-/**
- * 在 Render thread 上执行有界的一段 staging 工作。
- *
- * <p>预算只限制本次调用，不限制最终任务数量。每次调用至少处理一项，避免单项成本已经超过
- * 预算时永久无进展；完成的资源在外部 staging 中保持不可见，直到最后一次原子提交。</p>
- */
+/// 在 Render thread 上执行有界的一段 staging 工作。
+///
+/// 预算只限制本次调用，不限制最终任务数量。每次调用至少处理一项，避免单项成本已经超过
+/// 预算时永久无进展；完成的资源在外部 staging 中保持不可见，直到最后一次原子提交。
 final class RenderUploadBudget {
     record Slice(int processedItems, boolean complete, long elapsedNanos) {
     }

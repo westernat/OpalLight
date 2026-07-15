@@ -2,12 +2,7 @@ package org.mesdag.opallight.light;
 
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Predicate;
 
 /**
@@ -109,8 +104,7 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
             return null;
         }
         // 即使键实现将来变化，也在所有权边界再次校验完整复合身份。
-        if (!cached.matches(exactIdentity, revisions)
-                || !cached.allGpuMeshesMatch(gpuValidity)) {
+        if (!cached.matches(exactIdentity, revisions) || !cached.allGpuMeshesMatch(gpuValidity)) {
             cache.remove(key);
             return null;
         }
