@@ -7,15 +7,12 @@ import net.minecraft.data.DataGenerator;
 import net.minecraft.data.PackOutput;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.Item;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.LanternBlock;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
-import net.minecraft.world.level.material.MapColor;
 import net.minecraft.world.level.material.PushReaction;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -56,16 +53,15 @@ public class OpalLight {
         tabs.register(eventBus);
         for (DyeColor color : COLORS) {
             String name = color.getName() + "_lantern";
-            DeferredHolder<Block, LanternBlock> block = blocks.register(name, () -> new LanternBlock(BlockBehaviour.Properties.of()
-                    .mapColor(MapColor.METAL)
+            items.registerSimpleBlockItem(name, blocks.register(name, () -> new LanternBlock(BlockBehaviour.Properties.of()
+                    .mapColor(color)
                     .forceSolidOn()
                     .requiresCorrectToolForDrops()
                     .strength(3.5F)
                     .sound(SoundType.LANTERN)
                     .lightLevel(state -> 15)
                     .noOcclusion()
-                    .pushReaction(PushReaction.DESTROY)));
-            items.register(name, () -> new BlockItem(block.get(), new Item.Properties()));
+                    .pushReaction(PushReaction.DESTROY))));
         }
         tabs.register("lanterns", () -> CreativeModeTab.builder()
                 .icon(BuiltInRegistries.ITEM.get(asResource("green_lantern"))::getDefaultInstance)

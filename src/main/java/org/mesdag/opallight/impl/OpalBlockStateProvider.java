@@ -4,7 +4,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.data.PackOutput;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.DyeColor;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.LanternBlock;
 import net.neoforged.neoforge.client.model.generators.BlockStateProvider;
 import net.neoforged.neoforge.client.model.generators.ConfiguredModel;
@@ -26,8 +25,7 @@ public class OpalBlockStateProvider extends BlockStateProvider {
         ModelFile.UncheckedModelFile itemGenerated = new ModelFile.UncheckedModelFile(ResourceLocation.withDefaultNamespace("item/generated"));
         for (DyeColor color : OpalLight.COLORS) {
             ResourceLocation id = OpalLight.asResource(color.getName() + "_lantern");
-            Block block = BuiltInRegistries.BLOCK.get(id);
-            getVariantBuilder(block)
+            getVariantBuilder(BuiltInRegistries.BLOCK.get(id))
                     .partialState().with(LanternBlock.HANGING, false).setModels(lanternModel)
                     .partialState().with(LanternBlock.HANGING, true).setModels(lanternHangingModel);
             itemModels().getBuilder(id.getPath()).parent(itemGenerated)

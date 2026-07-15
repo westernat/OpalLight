@@ -4,6 +4,7 @@ import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import org.mesdag.opallight.light.LightManager;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -23,15 +24,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class ClientChunkCacheMixin {
     @Inject(method = "updateViewCenter", at = @At("TAIL"))
     private void reconcileAfterViewCenterChange(int chunkX, int chunkZ, CallbackInfo ci) {
-        reconcileLoadedChunks();
+        opallight$reconcileLoadedChunks();
     }
 
     @Inject(method = "updateViewRadius", at = @At("TAIL"))
     private void reconcileAfterViewRadiusChange(int viewDistance, CallbackInfo ci) {
-        reconcileLoadedChunks();
+        opallight$reconcileLoadedChunks();
     }
 
-    private void reconcileLoadedChunks() {
+    @Unique
+    private void opallight$reconcileLoadedChunks() {
         ClientChunkCache cache = (ClientChunkCache) (Object) this;
         if (cache.getLevel() instanceof ClientLevel level) {
             LightManager.reconcileLoadedChunks(level);

@@ -4,8 +4,8 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -44,38 +44,47 @@ import java.util.Optional;
 @EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightManager {
     static @Nullable ShaderInstance lightMaskShader;
-    private static final RenderStateShard.LayeringStateShard LIGHT_MASK_LAYERING =
-            new RenderStateShard.LayeringStateShard(
-                    "opallight_polygon_offset",
-                    () -> {
-                        RenderSystem.polygonOffset(-1.0F, -1.0F);
-                        RenderSystem.enablePolygonOffset();
-                    },
-                    () -> {
-                        RenderSystem.polygonOffset(0.0F, 0.0F);
-                        RenderSystem.disablePolygonOffset();
-                    }
-            );
-    /**
-     * 通过 Minecraft 的渲染状态抽象描述遮罩，而不是直接调用 OpenGL。
-     * VulkanMod 会接管 RenderType/RenderSystem；直接操作 GL 状态会绕过其后端状态机。
-     */
-    private static final RenderType LIGHT_MASK = RenderType.create(
-            "opallight_light_mask",
-            DefaultVertexFormat.POSITION_TEX_COLOR,
-            VertexFormat.Mode.QUADS,
-            256,
-            false,
-            true,
-            RenderType.CompositeState.builder()
-                    .setShaderState(new RenderStateShard.ShaderStateShard(() -> lightMaskShader))
-                    .setTextureState(RenderType.BLOCK_SHEET)
-                    .setTransparencyState(RenderStateShard.ADDITIVE_TRANSPARENCY)
-                    .setDepthTestState(RenderType.LEQUAL_DEPTH_TEST)
-                    .setWriteMaskState(RenderType.COLOR_WRITE)
-                    .setLayeringState(LIGHT_MASK_LAYERING)
-                    .createCompositeState(false)
-    );
+    private static volatile RenderType lightMask;
+
+    private static RenderType lightMask() {
+        RenderType mask = lightMask;
+        if (mask == null) {
+            synchronized (LightManager.class) {
+                mask = lightMask;
+                if (mask == null) {
+                    mask = RenderType.create(
+                            "opallight_light_mask",
+                            DefaultVertexFormat.POSITION_TEX_COLOR,
+                            VertexFormat.Mode.QUADS,
+                            256,
+                            false,
+                            true,
+                            RenderType.CompositeState.builder()
+                                    .setShaderState(new RenderStateShard.ShaderStateShard(() -> lightMaskShader))
+                                    .setTextureState(RenderType.BLOCK_SHEET)
+                                    .setTransparencyState(RenderStateShard.ADDITIVE_TRANSPARENCY)
+                                    .setDepthTestState(RenderType.LEQUAL_DEPTH_TEST)
+                                    .setWriteMaskState(RenderType.COLOR_WRITE)
+                                    .setLayeringState(new RenderStateShard.LayeringStateShard(
+                                            "opallight_polygon_offset",
+                                            () -> {
+                                                RenderSystem.polygonOffset(-1.0F, -1.0F);
+                                                RenderSystem.enablePolygonOffset();
+                                            },
+                                            () -> {
+                                                RenderSystem.polygonOffset(0.0F, 0.0F);
+                                                RenderSystem.disablePolygonOffset();
+                                            }
+                                    ))
+                                    .createCompositeState(false)
+                    );
+                    lightMask = mask;
+                }
+            }
+        }
+        return mask;
+    }
+
     private static final Direction[] DIRECTIONS = Direction.values();
     // 区块流会在极短时间内分批到达；按真实时间合并，避免高帧率下过早提交半批数据。
     private static final long CHUNK_LIFECYCLE_QUIET_NANOS = 50_000_000L;
@@ -154,6 +163,7 @@ public final class LightManager {
     private static int pendingSnapshotMisses;
     private static long pendingSnapshotCaptureNanos;
     private static long pendingSnapshotValidationNanos;
+
     private LightManager() {
     }
 
@@ -202,8 +212,8 @@ public final class LightManager {
         markBulkContentChanged();
         int previousEmission = packedEmission(level, pos, previousState);
         int currentEmission = packedEmission(level, pos, currentState);
-        if (!isExcludedFromLightMesh(previousState, previousEmission)
-                || !isExcludedFromLightMesh(currentState, currentEmission)) {
+        if (isIncludedFromLightMesh(previousState, previousEmission)
+                || isIncludedFromLightMesh(currentState, currentEmission)) {
             visualRevision++;
         }
         if (propagationSignature(level, pos, previousState) != propagationSignature(level, pos, currentState)) {
@@ -365,8 +375,8 @@ public final class LightManager {
         return PackedLight.fromColor(color.r(), color.g(), color.b(), emission);
     }
 
-    private static boolean isExcludedFromLightMesh(BlockState state, int emission) {
-        return state.isAir() || emission != 0;
+    private static boolean isIncludedFromLightMesh(BlockState state, int emission) {
+        return !state.isAir() && emission == 0;
     }
 
     /**
@@ -382,7 +392,8 @@ public final class LightManager {
         }
         ensureLevel(level);
         flush(level);
-        LIGHT_MASK.setupRenderState();
+        RenderType mask = lightMask();
+        mask.setupRenderState();
         try {
             LightMaskMeshCache.draw(
                     viewMatrix,
@@ -392,7 +403,7 @@ public final class LightManager {
                     ENGINE
             );
         } finally {
-            LIGHT_MASK.clearRenderState();
+            mask.clearRenderState();
         }
     }
 
@@ -499,11 +510,11 @@ public final class LightManager {
         boolean asyncEligible = largeChangedWork && !lifecycleChanged;
         boolean sliceRequired = slicedRgbFallback != null
                 || RgbWorkloadPolicy.shouldSliceLifecycleWork(
-                    lifecycleChanged, ENGINE.pendingPropagationCount()
-                )
+                lifecycleChanged, ENGINE.pendingPropagationCount()
+        )
                 || !asyncEligible && (largeChangedWork || RgbWorkloadPolicy.shouldSliceQueuedPropagation(
-                    ENGINE.pendingPropagationCount()
-                ));
+                ENGINE.pendingPropagationCount()
+        ));
         boolean bulkCandidate = asyncEligible || sliceRequired;
         // SourceRegistry 覆盖完整已加载域后，零光源目标可严格证明为规范全零光场。
         boolean canonicalEmptyFastPath = asyncEligible && SOURCE_REGISTRY.isEmpty();
@@ -858,7 +869,9 @@ public final class LightManager {
         pendingSnapshotValidationNanos = 0;
     }
 
-    /** 只允许网格发布器在同一 generation 的 VBO 已经 active 后采用对应 CPU 快照。 */
+    /**
+     * 只允许网格发布器在同一 generation 的 VBO 已经 active 后采用对应 CPU 快照。
+     */
     static void activatePublishedCpuState(RgbLightEngine.ChunkSnapshot snapshot, long generationId) {
         if (snapshot == null) {
             throw new IllegalStateException("Bulk generation is missing its CPU light-field snapshot: " + generationId);
@@ -896,7 +909,9 @@ public final class LightManager {
         lastLifecycleChangeNanos = now;
     }
 
-    /** 取消 GPU staging 时先接回其完整 CPU 候选，随后到达的 delta 才不会从旧光场错误续算。 */
+    /**
+     * 取消 GPU staging 时先接回其完整 CPU 候选，随后到达的 delta 才不会从旧光场错误续算。
+     */
     private static void rebaseCancelledMeshCpuState() {
         RgbLightEngine.ChunkSnapshot cancelledCpuState =
                 LightMaskMeshCache.invalidatePendingBuildAndTakeCpuState();
@@ -1107,7 +1122,9 @@ public final class LightManager {
         );
     }
 
-    /** 返回会影响原版面遮光计算的稳定签名；等价的空气与非遮光灯具得到相同值。 */
+    /**
+     * 返回会影响原版面遮光计算的稳定签名；等价的空气与非遮光灯具得到相同值。
+     */
     private static long propagationSignature(Level level, BlockPos pos, BlockState state) {
         int opacity = Math.max(1, state.getLightBlock(level, pos));
         if (opacity >= 15) {
@@ -1180,7 +1197,9 @@ public final class LightManager {
                 : identityBytes + sectionBytes;
     }
 
-    /** 跨帧累计 live-world 精确回退；仅在引擎报告完整收敛后才允许对外发布。 */
+    /**
+     * 跨帧累计 live-world 精确回退；仅在引擎报告完整收敛后才允许对外发布。
+     */
     private static final class SlicedRgbFallback {
         private long checkedBlocks;
         private long decreaseSteps;
