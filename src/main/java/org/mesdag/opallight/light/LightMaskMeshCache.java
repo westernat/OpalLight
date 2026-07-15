@@ -15,6 +15,7 @@ import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.block.BlockModelShaper;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -22,7 +23,6 @@ import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
-import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -34,6 +34,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.model.data.ModelData;
 import org.joml.Matrix4f;
+import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.OpalLight;
 
 import java.util.ArrayList;
@@ -47,50 +48,54 @@ import static org.mesdag.opallight.light.LightManager.lightMaskShader;
 /** 在渲染线程中维护可独立替换的彩色光照网格缓存。 */
 public final class LightMaskMeshCache {
     private static final Direction[] DIRECTIONS = Direction.values();
+    /** 全局发布器与客户端生命周期一致，并由失效入口显式重置，不能使用局部 try-with-resources。 */
     private static final AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease> MESHES =
-            new AtomicMeshPublication<>(
-            RetainedGpuResource<VertexBuffer>.Lease::close,
+        new AtomicMeshPublication<>(
+            lease -> lease.close(),
             RenderSystem::assertOnRenderThread
-    );
+        );
     private static final LongOpenHashSet DIRTY_SECTIONS = new LongOpenHashSet();
     private static final RenderUploadBudget RENDER_MESH_BUDGET =
             // 留出调度与循环开销，实测单片才能稳定落在对外 4 ms 门槛内。
             new RenderUploadBudget(3_500_000L, System::nanoTime);
+    /**
+     * 候选捕获每处理这一批体素才重新读取一次时间预算。逐体素计时会在大范围重建时产生数千次
+     * {@code nanoTime} 与循环调度开销。平滑光照会为候选额外读取 3×3×3 邻域，因此把
+     * 检查点收紧到 32 个体素，避免单片在复杂建筑中越过既定的渲染线程预算。
+     */
     private static final GenerationCoordinator<MeshRequestKey, MeshBuildSnapshot, MeshBuildSnapshot.Result>
             MESH_COORDINATOR = new GenerationCoordinator<>(
                     "OpalLight-MeshWorker",
                     MeshBuildSnapshot::build,
-                    ignored -> { },
                     MeshBuildSnapshot.Result::close
             );
     private static final long GENERATION_CACHE_BYTES = 128L * 1024L * 1024L;
     private static final long STREAMING_CPU_MESH_BYTES = 16L * 1024L * 1024L;
-    /**
-     * 候选捕获每处理这一批体素才重新读取一次时间预算。逐体素计时会在大范围重建时产生数千次
-     * {@code nanoTime} 与循环调度开销；128 个体素仍把最坏工作单元限制在 section 的 1/32，
-     * 同时避免重新退化为不可抢占的整 section 扫描。
-     */
-    private static final int CANDIDATE_VOXELS_PER_BUDGET_CHECK = 128;
+    private static final int MAX_ASYNC_MESH_SECTIONS = 256;
+    private static final long MAX_CAPTURED_CANDIDATE_BYTES = 64L * 1024L * 1024L;
+    /** 面角光照数组扩展为 24 项后，按对象、数组、引用和列表槽位保守估算。 */
+    private static final long ESTIMATED_CANDIDATE_BYTES = 320L;
+    private static final int CANDIDATE_VOXELS_PER_BUDGET_CHECK = 32;
     private static final CompositeGenerationStore<RetainedGpuResource<VertexBuffer>.Lease> GENERATIONS =
             new CompositeGenerationStore<>(64L, GENERATION_CACHE_BYTES);
     private static final Reference2ObjectOpenHashMap<BlockState, BakedModel> MODEL_CACHE = new Reference2ObjectOpenHashMap<>();
     private static final Matrix4f MODEL_VIEW = new Matrix4f();
-    private static Object currentStateToken;
-    private static Object requestedStateToken;
+    private static @Nullable Object currentStateToken;
+    private static @Nullable Object requestedStateToken;
     private static boolean requestedStateCacheHit;
-    private static LightGeneration<RetainedGpuResource<VertexBuffer>.Lease> requestedGeneration;
-    private static RgbLightEngine.ChunkSnapshot requestedCpuState;
-    private static LightGeneration.RevisionKey requestedRevisions;
+    private static @Nullable LightGeneration<RetainedGpuResource<VertexBuffer>.Lease> requestedGeneration;
+    private static @Nullable RgbLightEngine.ChunkSnapshot requestedCpuState;
+    private static @Nullable LightGeneration.RevisionKey requestedRevisions;
     private static long nextMeshGenerationId = 1L;
     private static long meshRevision;
-    private static PendingMeshRebuild pendingMeshRebuild;
+    private static @Nullable PendingMeshRebuild pendingMeshRebuild;
 
     /** worker 结果必须与创建它的全部请求身份一致，generation id 防止同 revision 重用旧结果。 */
     private record MeshRequestKey(
             long meshRevision,
-            Object stateToken,
-            LightGeneration.RevisionKey revisions,
-            RgbLightEngine.ChunkSnapshot cpuState,
+            @Nullable Object stateToken,
+            @Nullable LightGeneration.RevisionKey revisions,
+            @Nullable RgbLightEngine.ChunkSnapshot cpuState,
             long generationId
     ) {
     }
@@ -104,19 +109,10 @@ public final class LightMaskMeshCache {
     }
 
     /**
-     * 方块或模型回调到达时立刻使旧快照/worker/staging 过期，但继续显示完整 active 代。
-     * 真正受影响的 section 仍由 RGB/ModelData 批处理收敛后通过 {@link #markDirty(long)} 合并，
-     * 这里不提前发布也不重复扩散脏集合。
-     */
-    public static void invalidatePendingBuild() {
-        invalidatePendingBuildAndTakeCpuState();
-    }
-
-    /**
      * 取消尚未提交的 GPU staging，并把它对应的完整 CPU 候选交还给事件编排器。
      * 调用方必须在新的方块或生命周期 delta 被处理前，用该快照重设 owner 引擎的计算基底。
      */
-    static RgbLightEngine.ChunkSnapshot invalidatePendingBuildAndTakeCpuState() {
+    static @Nullable RgbLightEngine.ChunkSnapshot invalidatePendingBuildAndTakeCpuState() {
         RgbLightEngine.ChunkSnapshot cancelledCpuState = pendingMeshRebuild != null
                 && pendingMeshRebuild.atomicBulkReplacement
                 ? pendingMeshRebuild.cpuState
@@ -139,7 +135,7 @@ public final class LightMaskMeshCache {
      * 查询一代 CPU/GPU 都有效的精确缓存，并暂存独立 owner 等待下一次 draw 原子采用。
      * 返回 {@code null} 表示只能走 CPU-only 或完整冷重建路径。
      */
-    static RgbLightEngine.ChunkSnapshot prepareCachedBulkState(
+    static @Nullable RgbLightEngine.ChunkSnapshot prepareCachedBulkState(
             Object stateToken,
             LightGeneration.RevisionKey revisions
     ) {
@@ -157,9 +153,9 @@ public final class LightMaskMeshCache {
     }
 
     public static void selectBulkState(
-            Object stateToken,
-            LightGeneration.RevisionKey revisions,
-            RgbLightEngine.ChunkSnapshot cpuState,
+            @Nullable Object stateToken,
+            @Nullable LightGeneration.RevisionKey revisions,
+            @Nullable RgbLightEngine.ChunkSnapshot cpuState,
             boolean cacheHit
     ) {
         requestedStateToken = stateToken;
@@ -181,12 +177,6 @@ public final class LightMaskMeshCache {
             requestedCpuState = null;
             requestedRevisions = null;
         }
-    }
-
-    public static void removeChunk(int chunkX, int chunkZ) {
-        LongOpenHashSet chunkKeys = new LongOpenHashSet();
-        chunkKeys.add(ChunkPos.asLong(chunkX, chunkZ));
-        removeChunks(chunkKeys);
     }
 
     /**
@@ -223,13 +213,13 @@ public final class LightMaskMeshCache {
                 }
             }
         }
-        GENERATIONS.removeCachedIf(generation -> generation.anyGpuMeshMatches(
-                (sectionKey, ignored) -> chunkKeys.contains(ChunkPos.asLong(
+        GENERATIONS.removeCachedIf(generation -> generation.anyGpuSectionMatches(
+                sectionKey -> chunkKeys.contains(ChunkPos.asLong(
                         PackedPosition.sectionX(sectionKey), PackedPosition.sectionZ(sectionKey)
                 ))
         ));
-        if (requestedGeneration != null && requestedGeneration.anyGpuMeshMatches(
-                (sectionKey, ignored) -> chunkKeys.contains(ChunkPos.asLong(
+        if (requestedGeneration != null && requestedGeneration.anyGpuSectionMatches(
+                sectionKey -> chunkKeys.contains(ChunkPos.asLong(
                         PackedPosition.sectionX(sectionKey), PackedPosition.sectionZ(sectionKey)
                 ))
         )) {
@@ -248,24 +238,33 @@ public final class LightMaskMeshCache {
         }
     }
 
-    public static void draw(Matrix4f viewMatrix, Camera camera, ClientLevel level, RgbLightEngine engine) {
+    public static void draw(
+            Matrix4f viewMatrix,
+            Matrix4f projectionMatrix,
+            Camera camera,
+            ClientLevel level,
+            RgbLightEngine engine
+    ) {
         cancelStaleMeshRebuild();
         activateRequestedState();
         rebuildDirty(level, engine);
-        if (MESHES.activeSize() == 0 || lightMaskShader == null) {
+        ShaderInstance shader = lightMaskShader;
+        if (MESHES.activeSize() == 0 || shader == null) {
             return;
         }
 
         Minecraft minecraft = Minecraft.getInstance();
-        int blockAtlas = minecraft.getTextureManager().getTexture(InventoryMenu.BLOCK_ATLAS).getId();
         Vec3 cameraPos = camera.getPosition();
         Frustum frustum = minecraft.levelRenderer.getFrustum();
-        lightMaskShader.setSampler("Sampler0", blockAtlas);
-        lightMaskShader.MODEL_VIEW_MATRIX.set(MODEL_VIEW.set(viewMatrix).translate(
-                (float) -cameraPos.x, (float) -cameraPos.y, (float) -cameraPos.z
-        ));
-        lightMaskShader.PROJECTION_MATRIX.set(RenderSystem.getProjectionMatrix());
-        lightMaskShader.apply();
+        shader.setDefaultUniforms(
+                VertexFormat.Mode.QUADS,
+                MODEL_VIEW.set(viewMatrix).translate(
+                        (float) -cameraPos.x, (float) -cameraPos.y, (float) -cameraPos.z
+                ),
+                projectionMatrix,
+                minecraft.getWindow()
+        );
+        shader.apply();
         try {
             MESHES.forEachActive((sectionKey, lease) -> {
                 VertexBuffer buffer = lease.value();
@@ -275,7 +274,7 @@ public final class LightMaskMeshCache {
                 }
             });
         } finally {
-            lightMaskShader.clear();
+            shader.clear();
             VertexBuffer.unbind();
         }
     }
@@ -316,7 +315,7 @@ public final class LightMaskMeshCache {
             }
             requestedGeneration = null;
             long elapsed = System.nanoTime() - started;
-            RuntimeException failure = publishStagedGeneration(restored, requested, previous, true);
+            Throwable failure = publishStagedGeneration(restored, requested, previous, true);
             if (isGenerationActive(restoredGenerationId)) {
                 OpalLight.LOGGER.debug(
                         "RGB mesh state restore: buffers={}, time={}us",
@@ -421,23 +420,23 @@ public final class LightMaskMeshCache {
      * owner，但后续清理仍可能抛错。因此这里依据 active id 判断提交是否已发生：已提交就先完成
      * token/请求簿记并关闭旧 Atomic owner；未提交则把旧 map 原子放回并关闭失败的新代。</p>
      */
-    private static RuntimeException publishStagedGeneration(
+    private static @Nullable Throwable publishStagedGeneration(
             LightGeneration<RetainedGpuResource<VertexBuffer>.Lease> generation,
             Object stateToken,
             AtomicMeshPublication.OwnedState<RetainedGpuResource<VertexBuffer>.Lease> previous,
             boolean cacheHit
     ) {
         long generationId = generation.generationId();
-        RuntimeException failure = null;
+        Throwable failure = null;
         long activeGpuGenerationId = MESHES.activeGenerationId();
         if (activeGpuGenerationId != generationId) {
             failure = new IllegalStateException(
-                    "CPU/GPU generation 不一致: cpu=" + generationId + ", gpu=" + activeGpuGenerationId
+                    "CPU/GPU generation mismatch: cpu=" + generationId + ", gpu=" + activeGpuGenerationId
             );
         } else {
             try {
                 GENERATIONS.publish(generation);
-            } catch (RuntimeException publishFailure) {
+            } catch (RuntimeException | Error publishFailure) {
                 failure = publishFailure;
             }
         }
@@ -452,12 +451,12 @@ public final class LightMaskMeshCache {
                 if (cacheHit) {
                     DIRTY_SECTIONS.clear();
                 }
-            } catch (RuntimeException activationFailure) {
+            } catch (RuntimeException | Error activationFailure) {
                 failure = mergeFailures(failure, activationFailure);
             } finally {
                 try {
                     previous.close();
-                } catch (RuntimeException closeFailure) {
+                } catch (RuntimeException | Error closeFailure) {
                     failure = mergeFailures(failure, closeFailure);
                 }
             }
@@ -468,12 +467,12 @@ public final class LightMaskMeshCache {
             AtomicMeshPublication.OwnedState<RetainedGpuResource<VertexBuffer>.Lease> failedNew =
                     MESHES.adopt(previous);
             failedNew.close();
-        } catch (RuntimeException rollbackFailure) {
+        } catch (RuntimeException | Error rollbackFailure) {
             failure = mergeFailures(failure, rollbackFailure);
         }
         try {
             generation.close();
-        } catch (RuntimeException closeFailure) {
+        } catch (RuntimeException | Error closeFailure) {
             failure = mergeFailures(failure, closeFailure);
         }
         requestedStateToken = currentStateToken;
@@ -487,7 +486,7 @@ public final class LightMaskMeshCache {
         return GENERATIONS.activeGenerationId() == generationId;
     }
 
-    private static RuntimeException mergeFailures(RuntimeException first, RuntimeException next) {
+    private static RuntimeException mergeFailures(@Nullable RuntimeException first, RuntimeException next) {
         if (first == null) {
             return next;
         }
@@ -495,13 +494,27 @@ public final class LightMaskMeshCache {
         return first;
     }
 
-    private static void rethrow(RuntimeException failure) {
+    private static Throwable mergeFailures(@Nullable Throwable first, Throwable next) {
+        if (first == null) {
+            return next;
+        }
+        first.addSuppressed(next);
+        return first;
+    }
+
+    private static void rethrow(@Nullable Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
         if (failure != null) {
-            throw failure;
+            throw new AssertionError("Resource cleanup threw an undeclared checked exception", failure);
         }
     }
 
-    private static MeshBuildSnapshot.BuiltSection buildSection(
+    private static @Nullable MeshBuildSnapshot.BuiltSection buildSection(
             ClientLevel level,
             long sectionKey,
             LongToIntFunction lightLookup
@@ -512,7 +525,9 @@ public final class LightMaskMeshCache {
         if (sectionY < level.getMinSection() || sectionY >= level.getMaxSection()) {
             return null;
         }
-        LevelChunk chunk = level.getChunkSource().getChunk(sectionX, sectionZ, ChunkStatus.FULL, false);
+        @Nullable LevelChunk chunk = level.getChunkSource().getChunk(
+                sectionX, sectionZ, ChunkStatus.FULL, false
+        );
         if (chunk == null) {
             return null;
         }
@@ -529,7 +544,8 @@ public final class LightMaskMeshCache {
             RandomSource random = RandomSource.create(0L);
             BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
             BlockPos.MutableBlockPos neighborPos = new BlockPos.MutableBlockPos();
-            int[] neighborLights = new int[PackedPosition.DIRECTION_COUNT];
+            int[] faceCornerLights = new int[LightMaskMeshPrefilter.FACE_SAMPLE_COUNT];
+            float[] smoothColor = new float[3];
             int originX = sectionX << 4;
             int originY = sectionY << 4;
             int originZ = sectionZ << 4;
@@ -550,11 +566,9 @@ public final class LightMaskMeshCache {
                     }
 
                     long packedPos = PackedPosition.pack(worldX, worldY, worldZ);
-                    int unculledLight = LightMaskMeshPrefilter.sampleNeighborLights(
-                            lightLookup, packedPos, neighborLights
-                    );
-                    if (unculledLight == 0) {
-                        // 六邻全部无彩光时不可能生成遮罩顶点，禁止触碰模型和 ModelData。
+                    LightMaskMeshPrefilter.sampleFaceCorners(lightLookup, packedPos, faceCornerLights);
+                    if (!LightMaskMeshPrefilter.anyFaceHasLight(faceCornerLights)) {
+                        // 外壳 26 个体素全部无彩光时不可能生成遮罩顶点，禁止触碰模型和 ModelData。
                         continue;
                     }
                     BakedModel model = MODEL_CACHE.computeIfAbsent(state, shaper::getBlockModel);
@@ -570,25 +584,25 @@ public final class LightMaskMeshCache {
                     for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
                         Direction direction = DIRECTIONS[directionIndex];
                         long neighborPacked = PackedPosition.offset(packedPos, directionIndex);
-                        int light = neighborLights[directionIndex];
-                        if (light == 0) {
-                            continue;
-                        }
                         neighborPos.set(neighborPacked);
                         if (!Block.shouldRenderFace(state, level, blockPos, direction, neighborPos)) {
                             continue;
                         }
                         random.setSeed(seed);
                         for (BakedQuad quad : model.getQuads(state, direction, random, modelData, null)) {
-                            renderQuad(builder, quad, worldX, worldY, worldZ, light);
+                            renderQuad(
+                                    builder, quad, worldX, worldY, worldZ,
+                                    faceCornerLights, smoothColor
+                            );
                         }
                     }
 
-                    if (unculledLight != 0) {
-                        random.setSeed(seed);
-                        for (BakedQuad quad : model.getQuads(state, null, random, modelData, null)) {
-                            renderQuad(builder, quad, worldX, worldY, worldZ, unculledLight);
-                        }
+                    random.setSeed(seed);
+                    for (BakedQuad quad : model.getQuads(state, null, random, modelData, null)) {
+                        renderQuad(
+                                builder, quad, worldX, worldY, worldZ,
+                                faceCornerLights, smoothColor
+                        );
                     }
                     }
                 }
@@ -608,11 +622,21 @@ public final class LightMaskMeshCache {
         }
     }
 
-    private static void renderQuad(BufferBuilder builder, BakedQuad quad, int worldX, int worldY, int worldZ, int light) {
+    private static void renderQuad(
+            BufferBuilder builder,
+            BakedQuad quad,
+            int worldX,
+            int worldY,
+            int worldZ,
+            int[] faceCornerLights,
+            float[] smoothColor
+    ) {
         int[] vertices = quad.getVertices();
-        float red = PackedLight.red(light) / 15.0F;
-        float green = PackedLight.green(light) / 15.0F;
-        float blue = PackedLight.blue(light) / 15.0F;
+        int directionIndex = quad.getDirection().get3DDataValue();
+        if (!LightMaskMeshPrefilter.faceHasLight(faceCornerLights, directionIndex)
+                || !LightMaskMeshPrefilter.isBoundaryQuad(vertices, directionIndex)) {
+            return;
+        }
         for (int vertex = 0; vertex < 4; vertex++) {
             int offset = vertex * 8;
             float x = Float.intBitsToFloat(vertices[offset]);
@@ -620,13 +644,16 @@ public final class LightMaskMeshCache {
             float z = Float.intBitsToFloat(vertices[offset + 2]);
             float u = Float.intBitsToFloat(vertices[offset + 4]);
             float v = Float.intBitsToFloat(vertices[offset + 5]);
+            LightMaskMeshPrefilter.smoothFaceColorAtVertex(
+                    faceCornerLights, directionIndex, x, y, z, smoothColor
+            );
             builder.addVertex(worldX + x, worldY + y, worldZ + z)
-                    .setColor(red, green, blue, 1.0F)
+                    .setColor(smoothColor[0], smoothColor[1], smoothColor[2], 1.0F)
                     .setUv(u, v);
         }
     }
 
-    private static boolean isVisible(long sectionKey, Frustum frustum) {
+    private static boolean isVisible(long sectionKey, @Nullable Frustum frustum) {
         if (frustum == null) {
             return true;
         }
@@ -645,10 +672,11 @@ public final class LightMaskMeshCache {
         private final long[] sections;
         private final LongOpenHashSet dirtySectionSet;
         private final LongOpenHashSet lightSections;
+        private final LongOpenHashSet dependentChunks;
         private final boolean atomicBulkReplacement;
-        private final Object stateToken;
-        private final LightGeneration.RevisionKey revisions;
-        private final RgbLightEngine.ChunkSnapshot cpuState;
+        private final @Nullable Object stateToken;
+        private final @Nullable LightGeneration.RevisionKey revisions;
+        private final @Nullable RgbLightEngine.ChunkSnapshot cpuState;
         private final long generationId;
         private final MeshRequestKey requestKey;
         private final long startedNanos = System.nanoTime();
@@ -665,6 +693,9 @@ public final class LightMaskMeshCache {
         private int captureSectionIndex;
         private int candidateSectionIndex;
         private int candidateVoxelIndex;
+        private int candidateOriginX;
+        private int candidateOriginY;
+        private int candidateOriginZ;
         private int fallbackSectionIndex;
         private int prefilteredSections;
         private long meshCpuNanos;
@@ -674,36 +705,54 @@ public final class LightMaskMeshCache {
         private long uploadNanos;
         private long maxUploadSliceNanos;
         private int uploadSliceCount;
-        private AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease>.Stage stage;
-        private long[] activeKeys;
+        private @Nullable AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease>.Stage stage;
+        private long[] activeKeys = new long[0];
         private final LongArrayList uploadKeys = new LongArrayList();
         private int activeIndex;
         private int uploadIndex;
         private long gpuBytes;
         private long pendingCpuBytes;
+        private long capturedCandidateBytes;
         private int nonEmptySections;
         private boolean finished;
-        private PalettedContainer<BlockState> candidateStates;
-        private List<MeshBuildSnapshot.Candidate> currentCandidates;
-        private BlockModelShaper candidateShaper;
+        private @Nullable PalettedContainer<BlockState> candidateStates;
+        private @Nullable List<MeshBuildSnapshot.Candidate> currentCandidates;
+        private @Nullable BlockModelShaper candidateShaper;
         private final BlockPos.MutableBlockPos candidateBlockPos = new BlockPos.MutableBlockPos();
         private final BlockPos.MutableBlockPos candidateNeighborPos = new BlockPos.MutableBlockPos();
-        private final int[] candidateNeighborLights = new int[PackedPosition.DIRECTION_COUNT];
+        private final int[] candidateFaceCornerLights = new int[LightMaskMeshPrefilter.FACE_SAMPLE_COUNT];
 
         private PendingMeshRebuild(
                 long revision,
                 long[] sections,
                 LongOpenHashSet lightSections,
                 boolean atomicBulkReplacement,
-                Object stateToken,
-                LightGeneration.RevisionKey revisions,
-                RgbLightEngine.ChunkSnapshot cpuState,
+                @Nullable Object stateToken,
+                @Nullable LightGeneration.RevisionKey revisions,
+                @Nullable RgbLightEngine.ChunkSnapshot cpuState,
                 long generationId
         ) {
             this.revision = revision;
             this.sections = sections;
             this.dirtySectionSet = new LongOpenHashSet(sections);
             this.lightSections = lightSections;
+            this.dependentChunks = new LongOpenHashSet();
+            LongOpenHashSet targetChunks = new LongOpenHashSet();
+            for (long sectionKey : sections) {
+                targetChunks.add(ChunkPos.asLong(
+                        PackedPosition.sectionX(sectionKey),
+                        PackedPosition.sectionZ(sectionKey)
+                ));
+            }
+            for (long targetChunk : targetChunks) {
+                int sectionX = ChunkPos.getX(targetChunk);
+                int sectionZ = ChunkPos.getZ(targetChunk);
+                for (int offsetX = -1; offsetX <= 1; offsetX++) {
+                    for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
+                        dependentChunks.add(ChunkPos.asLong(sectionX + offsetX, sectionZ + offsetZ));
+                    }
+                }
+            }
             this.atomicBulkReplacement = atomicBulkReplacement;
             this.stateToken = stateToken;
             this.revisions = revisions;
@@ -713,7 +762,9 @@ public final class LightMaskMeshCache {
             // 面可见性已经在渲染线程直接查询真实世界；worker 不再读取邻居调色板，复制六邻域只会
             // 放大主线程快照成本和内存，因此这里只冻结真正会扫描的目标 section。
             this.captureSections = sections.clone();
-            this.cpuPhase = cpuState != null && sections.length > 16
+            this.cpuPhase = cpuState != null
+                    && sections.length > 16
+                    && sections.length <= MAX_ASYNC_MESH_SECTIONS
                     ? CpuPhase.CAPTURE_SECTIONS
                     : CpuPhase.FALLBACK;
         }
@@ -737,16 +788,10 @@ public final class LightMaskMeshCache {
             return cpuPhase == CpuPhase.FALLBACK && (stage == null || hasUploadWork());
         }
 
-        /** 卸载目标区块或其水平邻居会改变边界面；更远的流送事件与本次快照无关。 */
+        /** 面角采样会读取目标区块周围一格，因此九宫格内任一区块卸载都会使快照失效。 */
         private boolean dependsOnChunks(LongSet chunkKeys) {
-            for (long sectionKey : sections) {
-                int sectionX = PackedPosition.sectionX(sectionKey);
-                int sectionZ = PackedPosition.sectionZ(sectionKey);
-                if (chunkKeys.contains(ChunkPos.asLong(sectionX, sectionZ))
-                        || chunkKeys.contains(ChunkPos.asLong(sectionX - 1, sectionZ))
-                        || chunkKeys.contains(ChunkPos.asLong(sectionX + 1, sectionZ))
-                        || chunkKeys.contains(ChunkPos.asLong(sectionX, sectionZ - 1))
-                        || chunkKeys.contains(ChunkPos.asLong(sectionX, sectionZ + 1))) {
+            for (long chunkKey : chunkKeys) {
+                if (dependentChunks.contains(chunkKey)) {
                     return true;
                 }
             }
@@ -774,29 +819,39 @@ public final class LightMaskMeshCache {
                                 && pendingCpuBytes < STREAMING_CPU_MESH_BYTES,
                         () -> buildNextFallbackSection(level, engine)
                 );
-                case WAITING_WORKER, COMPLETE -> throw new IllegalStateException("CPU 网格阶段状态错误");
+                case WAITING_WORKER, COMPLETE -> throw new IllegalStateException("Invalid CPU mesh phase state");
             };
             meshCpuNanos = saturatedAdd(meshCpuNanos, slice.elapsedNanos());
             maxCpuSliceNanos = Math.max(maxCpuSliceNanos, slice.elapsedNanos());
             cpuSliceCount++;
-            advanceCpuPhase(level);
+            advanceCpuPhase();
         }
 
         private void captureNextSection(ClientLevel level) {
             long sectionKey = captureSections[captureSectionIndex++];
+            // 没有相邻 RGB 光的 section 不会生成任何遮罩面，无需复制其 4096 个方块状态。
+            if (!LightMaskMeshPrefilter.sectionCanContainLitSurface(lightSections, sectionKey)) {
+                return;
+            }
             int sectionX = PackedPosition.sectionX(sectionKey);
             int sectionY = PackedPosition.sectionY(sectionKey);
             int sectionZ = PackedPosition.sectionZ(sectionKey);
             if (sectionY < level.getMinSection() || sectionY >= level.getMaxSection()) {
                 return;
             }
-            LevelChunk chunk = level.getChunkSource().getChunk(sectionX, sectionZ, ChunkStatus.FULL, false);
+            @Nullable LevelChunk chunk = level.getChunkSource().getChunk(
+                    sectionX, sectionZ, ChunkStatus.FULL, false
+            );
             if (chunk == null) {
                 return;
             }
             LevelChunkSection section = chunk.getSection(level.getSectionIndexFromSectionY(sectionY));
             section.acquire();
             try {
+                // 空气 section 即使位于光照邻域内也没有可见表面，直接跳过整段候选扫描。
+                if (section.hasOnlyAir()) {
+                    return;
+                }
                 copiedSections.put(sectionKey, section.getStates().copy());
             } finally {
                 section.release();
@@ -824,7 +879,13 @@ public final class LightMaskMeshCache {
                     candidateSectionIndex++;
                     return;
                 }
-                currentCandidates = new ArrayList<>();
+                candidateOriginX = PackedPosition.sectionX(sectionKey) << 4;
+                candidateOriginY = PackedPosition.sectionY(sectionKey) << 4;
+                candidateOriginZ = PackedPosition.sectionZ(sectionKey) << 4;
+                if (candidateShaper == null) {
+                    candidateShaper = Minecraft.getInstance().getBlockRenderer().getBlockModelShaper();
+                }
+                currentCandidates = null;
                 candidateVoxelIndex = 0;
             }
 
@@ -833,50 +894,48 @@ public final class LightMaskMeshCache {
             int localX = voxelIndex & 15;
             int localZ = (voxelIndex >>> 4) & 15;
             int localY = (voxelIndex >>> 8) & 15;
-            int sectionX = PackedPosition.sectionX(sectionKey);
-            int sectionY = PackedPosition.sectionY(sectionKey);
-            int sectionZ = PackedPosition.sectionZ(sectionKey);
-            int originX = sectionX << 4;
-            int originY = sectionY << 4;
-            int originZ = sectionZ << 4;
-            if (candidateShaper == null) {
-                candidateShaper = Minecraft.getInstance().getBlockRenderer().getBlockModelShaper();
-            }
             try {
                         BlockState state = candidateStates.get(localX, localY, localZ);
                         if (state.isAir()) {
                             return;
                         }
-                        int worldX = originX + localX;
-                        int worldY = originY + localY;
-                        int worldZ = originZ + localZ;
+                        int worldX = candidateOriginX + localX;
+                        int worldY = candidateOriginY + localY;
+                        int worldZ = candidateOriginZ + localZ;
                         long packedPos = PackedPosition.pack(worldX, worldY, worldZ);
                         if (cpuState.directEmissionAt(packedPos) != 0) {
                             return;
                         }
-                        int unculledLight = LightMaskMeshPrefilter.sampleNeighborLights(
-                                cpuState::lightAt, packedPos, candidateNeighborLights
+                        LightMaskMeshPrefilter.sampleFaceCorners(
+                                cpuState::lightAt, packedPos, candidateFaceCornerLights
                         );
-                        if (unculledLight == 0) {
+                        if (!LightMaskMeshPrefilter.anyFaceHasLight(candidateFaceCornerLights)) {
+                            return;
+                        }
+                        if (capturedCandidateBytes
+                                > MAX_CAPTURED_CANDIDATE_BYTES - ESTIMATED_CANDIDATE_BYTES) {
+                            switchToStreamingFallback();
                             return;
                         }
                         candidateBlockPos.set(worldX, worldY, worldZ);
                         BakedModel model = MODEL_CACHE.computeIfAbsent(state, candidateShaper::getBlockModel);
                         ModelData modelData = level.getModelData(candidateBlockPos);
                         modelData = model.getModelData(level, candidateBlockPos, state, modelData);
-                        boolean[] visibleFaces = new boolean[PackedPosition.DIRECTION_COUNT];
+                        int visibleFaceMask = 0;
                         for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
-                            if (candidateNeighborLights[directionIndex] == 0) {
-                                continue;
-                            }
                             candidateNeighborPos.set(PackedPosition.offset(packedPos, directionIndex));
-                            visibleFaces[directionIndex] = Block.shouldRenderFace(
+                            if (Block.shouldRenderFace(
                                     state,
                                     level,
                                     candidateBlockPos,
                                     DIRECTIONS[directionIndex],
                                     candidateNeighborPos
-                            );
+                            )) {
+                                visibleFaceMask |= 1 << directionIndex;
+                            }
+                        }
+                        if (currentCandidates == null) {
+                            currentCandidates = new ArrayList<>();
                         }
                         currentCandidates.add(new MeshBuildSnapshot.Candidate(
                                 packedPos,
@@ -884,13 +943,13 @@ public final class LightMaskMeshCache {
                                 model,
                                 modelData,
                                 state.getSeed(candidateBlockPos),
-                                candidateNeighborLights,
-                                visibleFaces,
-                                unculledLight
+                                candidateFaceCornerLights,
+                                visibleFaceMask
                         ));
+                        capturedCandidateBytes += ESTIMATED_CANDIDATE_BYTES;
             } finally {
                 if (candidateVoxelIndex == 4096) {
-                    if (!currentCandidates.isEmpty()) {
+                    if (currentCandidates != null && !currentCandidates.isEmpty()) {
                         capturedCandidates.put(sectionKey, currentCandidates);
                     }
                     candidateStates = null;
@@ -899,6 +958,21 @@ public final class LightMaskMeshCache {
                     candidateSectionIndex++;
                 }
             }
+        }
+
+        /**
+         * 快照只是加速路径，预算耗尽时必须回到逐 section 的精确构建，不能丢方块或截断光源。
+         * 旧 active 仍保持可见，流式结果继续上传到同一不可见 staging，最终仍只发布一次。
+         */
+        private void switchToStreamingFallback() {
+            copiedSections.clear();
+            capturedCandidates.clear();
+            candidateStates = null;
+            currentCandidates = null;
+            candidateVoxelIndex = 0;
+            capturedCandidateBytes = 0L;
+            fallbackSectionIndex = 0;
+            cpuPhase = CpuPhase.FALLBACK;
         }
 
         private void buildNextFallbackSection(ClientLevel level, RgbLightEngine engine) {
@@ -914,7 +988,7 @@ public final class LightMaskMeshCache {
             }
         }
 
-        private void advanceCpuPhase(ClientLevel level) {
+        private void advanceCpuPhase() {
             if (cpuPhase == CpuPhase.CAPTURE_SECTIONS
                     && captureSectionIndex == captureSections.length) {
                 cpuPhase = CpuPhase.CAPTURE_CANDIDATES;
@@ -938,7 +1012,10 @@ public final class LightMaskMeshCache {
         private void pollWorker() {
             Optional<Throwable> failure = MESH_COORDINATOR.takeFailure();
             if (failure.isPresent()) {
-                OpalLight.LOGGER.warn("异步 CPU 网格构建失败，回退到精确渲染线程路径", failure.orElseThrow());
+                OpalLight.LOGGER.warn(
+                        "Asynchronous CPU mesh build failed; using the exact render-thread fallback",
+                        failure.orElseThrow()
+                );
                 switchToFallback();
                 return;
             }
@@ -1016,9 +1093,12 @@ public final class LightMaskMeshCache {
                 if (dirtySectionSet.contains(sectionKey)) {
                     return;
                 }
-                RetainedGpuResource<VertexBuffer>.Lease activeOwner = MESHES.active(sectionKey);
+                RetainedGpuResource<VertexBuffer>.Lease activeOwner = Objects.requireNonNull(
+                        MESHES.active(sectionKey), "active section missing GPU owner"
+                );
                 RetainedGpuResource<VertexBuffer>.Lease stagingOwner = activeOwner.retain();
-                stage.put(sectionKey, stagingOwner, stagingOwner.bytes());
+                Objects.requireNonNull(stage, "The upload phase has not yet been initialized")
+                        .put(sectionKey, stagingOwner, stagingOwner.bytes());
                 if (atomicBulkReplacement) {
                     generationResources.put(sectionKey, activeOwner.retain());
                     gpuBytes = saturatedAdd(gpuBytes, activeOwner.bytes());
@@ -1029,7 +1109,7 @@ public final class LightMaskMeshCache {
             long sectionKey = uploadKeys.getLong(uploadIndex++);
             MeshBuildSnapshot.BuiltSection mesh = built.remove(sectionKey);
             if (mesh == null) {
-                throw new IllegalStateException("待上传 CPU 网格缺失");
+                throw new IllegalStateException("Pending CPU mesh is missing");
             }
             pendingCpuBytes = Math.max(0L, pendingCpuBytes - mesh.gpuBytes());
             VertexBuffer buffer = null;
@@ -1042,10 +1122,11 @@ public final class LightMaskMeshCache {
                         buffer,
                         mesh.gpuBytes(),
                         VertexBuffer::close,
-                        RenderSystem::assertOnRenderThread
+                        () -> RenderSystem.assertOnRenderThread()
                 );
                 buffer = null;
-                stage.put(sectionKey, stagingOwner, stagingOwner.bytes());
+                Objects.requireNonNull(stage, "The upload phase has not yet been initialized")
+                        .put(sectionKey, stagingOwner, stagingOwner.bytes());
                 if (atomicBulkReplacement) {
                     generationResources.put(sectionKey, stagingOwner.retain());
                     gpuBytes = saturatedAdd(gpuBytes, stagingOwner.bytes());
@@ -1069,6 +1150,15 @@ public final class LightMaskMeshCache {
         private void finish() {
             AtomicMeshPublication.OwnedState<RetainedGpuResource<VertexBuffer>.Lease> previous;
             if (atomicBulkReplacement) {
+                Object exactStateToken = Objects.requireNonNull(
+                        stateToken, "stateToken"
+                );
+                LightGeneration.RevisionKey exactRevisions = Objects.requireNonNull(
+                        revisions, "revisions"
+                );
+                RgbLightEngine.ChunkSnapshot exactCpuState = Objects.requireNonNull(
+                        cpuState, "cpuState"
+                );
                 GpuMeshSet<RetainedGpuResource<VertexBuffer>.Lease> gpuMeshes = null;
                 GpuMeshSet<RetainedGpuResource<VertexBuffer>.Lease>.Lease gpuLease = null;
                 LightGeneration<RetainedGpuResource<VertexBuffer>.Lease> candidate = null;
@@ -1079,8 +1169,8 @@ public final class LightMaskMeshCache {
                     gpuMeshes = new GpuMeshSet<>(
                             generationResources,
                             gpuBytes,
-                            RetainedGpuResource<VertexBuffer>.Lease::close,
-                            RenderSystem::assertOnRenderThread
+                            lease -> lease.close(),
+                            () -> RenderSystem.assertOnRenderThread()
                     );
                     // GpuMeshSet 构造完成后才转移 map 内 owner，构造失败仍由 PendingMeshRebuild.close 收尾。
                     generationResources.clear();
@@ -1088,23 +1178,23 @@ public final class LightMaskMeshCache {
                     gpuLease = gpuMeshes.acquire();
                     candidate = new LightGeneration<>(
                             generationId,
-                            stateToken,
-                            revisions,
-                            cpuState,
+                            exactStateToken,
+                            exactRevisions,
+                            exactCpuState,
                             gpuLease,
                             true
                     );
                     gpuLease = null;
-                    previous = stage.commit();
+                    previous = Objects.requireNonNull(stage, "stage").commit();
                     stage = null;
                     // 此调用无论成功还是回滚都会消费 candidate；必须在进入调用前转移所有权，
                     // 否则 publish 已成功但后续 CPU 激活或簿记异常时，finally 会再次关闭 active owner。
                     publicationOwnsCandidate = true;
                     LightGeneration<RetainedGpuResource<VertexBuffer>.Lease> publicationCandidate = candidate;
                     candidate = null;
-                    RuntimeException failure = publishStagedGeneration(
+                    Throwable failure = publishStagedGeneration(
                             publicationCandidate,
-                            stateToken,
+                            exactStateToken,
                             previous,
                             false
                     );
@@ -1113,24 +1203,24 @@ public final class LightMaskMeshCache {
                     primaryFailure = failure;
                     throw failure;
                 } finally {
-                    RuntimeException cleanupFailure = null;
+                    Throwable cleanupFailure = null;
                     if (!publicationOwnsCandidate && candidate != null) {
                         try {
                             candidate.close();
-                        } catch (RuntimeException failure) {
+                        } catch (RuntimeException | Error failure) {
                             cleanupFailure = failure;
                         }
                     } else if (gpuLease != null) {
                         try {
                             gpuLease.close();
-                        } catch (RuntimeException failure) {
+                        } catch (RuntimeException | Error failure) {
                             cleanupFailure = failure;
                         }
                     }
                     if (!publicationOwnsCandidate && resourcesTransferred && gpuMeshes != null) {
                         try {
                             gpuMeshes.discardUnleased();
-                        } catch (RuntimeException failure) {
+                        } catch (RuntimeException | Error failure) {
                             cleanupFailure = mergeFailures(cleanupFailure, failure);
                         }
                     }
@@ -1138,12 +1228,12 @@ public final class LightMaskMeshCache {
                         if (primaryFailure != null) {
                             primaryFailure.addSuppressed(cleanupFailure);
                         } else {
-                            throw cleanupFailure;
+                            rethrow(cleanupFailure);
                         }
                     }
                 }
             } else {
-                previous = stage.commit();
+                previous = Objects.requireNonNull(stage, "stage").commit();
                 stage = null;
                 GENERATIONS.discardActive();
                 previous.close();
@@ -1173,11 +1263,11 @@ public final class LightMaskMeshCache {
                 return;
             }
             finished = true;
-            RuntimeException failure = null;
+            Throwable failure = null;
             if (stage != null) {
                 try {
                     stage.close();
-                } catch (RuntimeException exception) {
+                } catch (RuntimeException | Error exception) {
                     failure = exception;
                 }
                 stage = null;
@@ -1185,25 +1275,25 @@ public final class LightMaskMeshCache {
             for (RetainedGpuResource<VertexBuffer>.Lease owner : generationResources.values()) {
                 try {
                     owner.close();
-                } catch (RuntimeException exception) {
+                } catch (RuntimeException | Error exception) {
                     failure = mergeFailures(failure, exception);
                 }
             }
             generationResources.clear();
             try {
                 closeBuiltMeshes();
-            } catch (RuntimeException exception) {
+            } catch (RuntimeException | Error exception) {
                 failure = mergeFailures(failure, exception);
             }
             rethrow(failure);
         }
 
         private void closeBuiltMeshes() {
-            RuntimeException failure = null;
+            Throwable failure = null;
             for (MeshBuildSnapshot.BuiltSection mesh : built.values()) {
                 try {
                     mesh.close();
-                } catch (RuntimeException exception) {
+                } catch (RuntimeException | Error exception) {
                     failure = mergeFailures(failure, exception);
                 }
             }

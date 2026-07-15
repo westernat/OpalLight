@@ -1,12 +1,11 @@
 package org.mesdag.opallight.light;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import org.jetbrains.annotations.Nullable;
 
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 
 /**
  * 管理一套可见 active 资源与至多一套不可见 staging 资源。
@@ -24,7 +23,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
     private Long2ObjectOpenHashMap<Entry<T>> active = new Long2ObjectOpenHashMap<>();
     private long activeGenerationId;
     private long activeBytes;
-    private Stage staging;
+    private @Nullable Stage staging;
     private boolean closed;
 
     AtomicMeshPublication(Consumer<? super T> disposer, Runnable threadAssertion) {
@@ -32,7 +31,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         this.threadAssertion = Objects.requireNonNull(threadAssertion, "threadAssertion");
     }
 
-    T active(long sectionKey) {
+    @Nullable T active(long sectionKey) {
         requireOpen();
         Entry<T> entry = active.get(sectionKey);
         return entry == null ? null : entry.resource;
@@ -43,20 +42,9 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         return active.size();
     }
 
-    long activeBytes() {
-        requireOpen();
-        return activeBytes;
-    }
-
     long activeGenerationId() {
         requireOpen();
         return activeGenerationId;
-    }
-
-    boolean allActiveMatch(Predicate<? super T> predicate) {
-        requireOpen();
-        Objects.requireNonNull(predicate, "predicate");
-        return active.values().stream().allMatch(entry -> predicate.test(entry.resource));
     }
 
     void forEachActive(BiConsumer<Long, ? super T> consumer) {
@@ -70,27 +58,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         return active.keySet().toLongArray();
     }
 
-    /** 兼容小更新的原地路径；完整批量发布必须使用 {@link Stage}。 */
-    void putActiveForLegacy(long generationId, long sectionKey, T resource, long bytes) {
-        requireOpen();
-        if (generationId < 0L) {
-            throw new IllegalArgumentException("generation id 不能为负数");
-        }
-        requireBytes(bytes);
-        Entry<T> next = new Entry<>(Objects.requireNonNull(resource, "resource"), bytes);
-        Entry<T> previous = active.put(sectionKey, next);
-        if (previous != null) {
-            activeBytes -= previous.bytes;
-        }
-        activeBytes = saturatedAdd(activeBytes, bytes);
-        activeGenerationId = generationId;
-        // 先完成新 active 的全部不变量，再释放旧资源；即使 disposer 失败，map/字节/代号仍一致。
-        if (previous != null) {
-            disposer.accept(previous.resource);
-        }
-    }
-
-    T removeActiveForLegacy(long sectionKey) {
+    @Nullable T removeActiveForLegacy(long sectionKey) {
         requireOpen();
         Entry<T> removed = active.remove(sectionKey);
         if (removed == null) {
@@ -103,10 +71,10 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
     Stage begin(long generationId) {
         requireOpen();
         if (generationId < 0L) {
-            throw new IllegalArgumentException("generation id 不能为负数");
+            throw new IllegalArgumentException("generationId must not be negative");
         }
         if (staging != null) {
-            throw new IllegalStateException("同一时刻只能存在一个 staging generation");
+            throw new IllegalStateException("Only one staging generation may exist at a time");
         }
         staging = new Stage(generationId);
         return staging;
@@ -117,7 +85,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         requireOpen();
         Objects.requireNonNull(state, "state");
         if (staging != null) {
-            throw new IllegalStateException("存在 staging 时不能采用缓存状态");
+            throw new IllegalStateException("Cached state cannot be adopted while a staging generation exists");
         }
         StatePayload<T> adopted = state.takeForAdoption(threadAssertion);
         OwnedState<T> previous = transferActive();
@@ -130,27 +98,25 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
     /** 取消 staging、释放 active，但保留 publication 对象供世界切换后的下一代复用。 */
     void reset() {
         requireOpen();
-        RuntimeException failure = null;
+        Throwable failure = null;
         if (staging != null) {
             try {
                 staging.close();
-            } catch (RuntimeException current) {
+            } catch (RuntimeException | Error current) {
                 failure = current;
             }
         }
         OwnedState<T> previous = transferActive();
         try {
             previous.close();
-        } catch (RuntimeException current) {
+        } catch (RuntimeException | Error current) {
             if (failure == null) {
                 failure = current;
             } else {
                 failure.addSuppressed(current);
             }
         }
-        if (failure != null) {
-            throw failure;
-        }
+        rethrow(failure);
     }
 
     private OwnedState<T> transferActive() {
@@ -169,18 +135,18 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
             return;
         }
         threadAssertion.run();
-        RuntimeException failure = null;
+        Throwable failure = null;
         if (staging != null) {
             try {
                 staging.close();
-            } catch (RuntimeException current) {
+            } catch (RuntimeException | Error current) {
                 failure = current;
             }
         }
         OwnedState<T> previous = transferActive();
         try {
             previous.close();
-        } catch (RuntimeException current) {
+        } catch (RuntimeException | Error current) {
             if (failure == null) {
                 failure = current;
             } else {
@@ -188,21 +154,19 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
             }
         }
         closed = true;
-        if (failure != null) {
-            throw failure;
-        }
+        rethrow(failure);
     }
 
     private void requireOpen() {
         threadAssertion.run();
         if (closed) {
-            throw new IllegalStateException("mesh publication 已经关闭");
+            throw new IllegalStateException("Mesh publication is already closed");
         }
     }
 
     private static void requireBytes(long bytes) {
         if (bytes < 0L) {
-            throw new IllegalArgumentException("GPU 字节数不能为负数");
+            throw new IllegalArgumentException("GPU byte count must not be negative");
         }
     }
 
@@ -233,31 +197,10 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
             this.threadAssertion = threadAssertion;
         }
 
-        int size() {
-            requireOwned();
-            return resources.size();
-        }
-
-        long bytes() {
-            requireOwned();
-            return bytes;
-        }
-
-        long[] sectionKeys() {
-            requireOwned();
-            return resources.keySet().toLongArray();
-        }
-
-        boolean allMatch(Predicate<? super T> predicate) {
-            requireOwned();
-            Objects.requireNonNull(predicate, "predicate");
-            return resources.values().stream().allMatch(entry -> predicate.test(entry.resource));
-        }
-
         private StatePayload<T> takeForAdoption(Runnable expectedThreadAssertion) {
             requireOwned();
             if (threadAssertion != expectedThreadAssertion) {
-                throw new IllegalArgumentException("资源状态属于不同的 Render-thread owner");
+                throw new IllegalArgumentException("The resource state belongs to a different render-thread owner");
             }
             StatePayload<T> payload = new StatePayload<>(generationId, resources, bytes);
             resources = new Long2ObjectOpenHashMap<>();
@@ -281,7 +224,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         private void requireOwned() {
             threadAssertion.run();
             if (closed) {
-                throw new IllegalStateException("资源状态已经转移或关闭");
+                throw new IllegalStateException("The resource state has already been transferred or closed");
             }
         }
     }
@@ -338,7 +281,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         private void requireUsable() {
             requireOpen();
             if (finished || staging != this) {
-                throw new IllegalStateException("staging generation 已经提交或取消");
+                throw new IllegalStateException("The staging generation has already been committed or cancelled");
             }
         }
     }
@@ -347,13 +290,14 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
             Long2ObjectOpenHashMap<Entry<T>> entries,
             Consumer<? super T> disposer
     ) {
-        long[] keys = entries.keySet().toLongArray();
-        Arrays.sort(keys);
-        RuntimeException failure = null;
-        for (long key : keys) {
+        Throwable failure = null;
+        var iterator = entries.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            T resource = iterator.next().getValue().resource;
+            iterator.remove();
             try {
-                disposer.accept(entries.get(key).resource);
-            } catch (RuntimeException current) {
+                disposer.accept(resource);
+            } catch (RuntimeException | Error current) {
                 if (failure == null) {
                     failure = current;
                 } else {
@@ -361,8 +305,18 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
                 }
             }
         }
+        rethrow(failure);
+    }
+
+    private static void rethrow(@Nullable Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
         if (failure != null) {
-            throw failure;
+            throw new AssertionError("GPU resource disposal threw an undeclared checked exception", failure);
         }
     }
 

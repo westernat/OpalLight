@@ -1,6 +1,5 @@
 package org.mesdag.opallight.light;
 
-import it.unimi.dsi.fastutil.longs.Long2IntMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -33,71 +32,44 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
     WorldLightSnapshot(
             int minBuildHeight,
             int height,
-            LongSet capturedSections,
-            Long2IntMap emissions,
-            Long2IntMap boundarySeeds,
+            LongOpenHashSet capturedSections,
+            Long2IntOpenHashMap emissions,
+            Long2IntOpenHashMap boundarySeeds,
             AttenuationAccess attenuationAccess,
             long captureNanos
     ) {
         if (height <= 0) {
-            throw new IllegalArgumentException("height 必须大于 0");
+            throw new IllegalArgumentException("height must be greater than zero");
         }
         this.minBuildHeight = minBuildHeight;
         this.maxBuildHeight = Math.addExact(minBuildHeight, height);
-        this.capturedSections = new LongOpenHashSet(Objects.requireNonNull(capturedSections, "capturedSections"));
-        this.emissions = new Long2IntOpenHashMap(Objects.requireNonNull(emissions, "emissions"));
+        // 三个容器均由 capture 新建并在此转移所有权，构造后只读，无需再次深复制哈希表。
+        this.capturedSections = Objects.requireNonNull(capturedSections, "capturedSections");
+        this.emissions = Objects.requireNonNull(emissions, "emissions");
         this.emissions.defaultReturnValue(0);
-        this.boundarySeeds = new Long2IntOpenHashMap(Objects.requireNonNull(boundarySeeds, "boundarySeeds"));
+        this.boundarySeeds = Objects.requireNonNull(boundarySeeds, "boundarySeeds");
         this.boundarySeeds.defaultReturnValue(0);
         this.attenuationAccess = Objects.requireNonNull(attenuationAccess, "attenuationAccess");
         this.captureNanos = captureNanos;
-    }
-
-    static WorldLightSnapshot forTesting(
-            int minBuildHeight,
-            int height,
-            LongSet capturedSections,
-            Long2IntMap emissions,
-            LongSet opaqueBlocks
-    ) {
-        LongOpenHashSet frozenOpaqueBlocks = new LongOpenHashSet(opaqueBlocks);
-        return new WorldLightSnapshot(
-                minBuildHeight,
-                height,
-                capturedSections,
-                emissions,
-                new Long2IntOpenHashMap(),
-                (from, to, direction) -> frozenOpaqueBlocks.contains(to) ? 16 : 1,
-                0L
-        );
     }
 
     /**
      * 把任意数量的方块变化先合并为 changed section，再增加一圈 section halo。
      * 一圈至少覆盖 15 格 RGB 传播闭包，并为边界面遮挡计算保留额外方块状态。
      */
-    static LongOpenHashSet sectionsToCapture(
-            LongSet changedPositions,
-            LongSet loadedChunks,
-            int minSectionY,
-            int maxSectionYExclusive
-    ) {
-        return sectionsToCaptureWithinBudget(
-                changedPositions, loadedChunks, minSectionY, maxSectionYExclusive, Integer.MAX_VALUE
-        ).orElseThrow();
-    }
-
     static Optional<LongOpenHashSet> sectionsToCaptureWithinBudget(
-            LongSet changedPositions,
+            long[] changedPositions,
             LongSet loadedChunks,
             int minSectionY,
             int maxSectionYExclusive,
             int maxSections
     ) {
         if (maxSections <= 0) {
-            throw new IllegalArgumentException("maxSections 必须大于 0");
+            throw new IllegalArgumentException("maxSections must be greater than zero");
         }
-        LongOpenHashSet changedSections = new LongOpenHashSet();
+        LongOpenHashSet changedSections = new LongOpenHashSet(
+                Math.min(changedPositions.length, maxSections)
+        );
         for (long pos : changedPositions) {
             changedSections.add(PackedPosition.sectionKey(pos));
             if (changedSections.size() > maxSections) {
@@ -105,7 +77,11 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
             }
         }
 
-        LongOpenHashSet result = new LongOpenHashSet();
+        int resultCapacity = (int) Math.min(
+                (long) maxSections,
+                (long) changedSections.size() * 27L
+        );
+        LongOpenHashSet result = new LongOpenHashSet(resultCapacity);
         for (long changedSection : changedSections) {
             int centerX = PackedPosition.sectionX(changedSection);
             int centerY = PackedPosition.sectionY(changedSection);

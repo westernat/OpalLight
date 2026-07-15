@@ -29,11 +29,7 @@ final class RgbLightVolume {
             return state.lightSectionCount();
         }
 
-        Object sectionIdentityForTest(long sectionKey) {
-            return state.lightSectionIdentityForTest(sectionKey);
-        }
-
-        int getForTest(long pos) {
+        int get(long pos) {
             return state.getLight(pos);
         }
 
@@ -182,10 +178,6 @@ final class RgbLightVolume {
     void freezePublished() {
         published = mutable.freeze();
         mutable = published.mutableCandidate();
-    }
-
-    Object sectionIdentityForTest(long sectionKey) {
-        return mutable.lightSectionIdentityForTest(sectionKey);
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {

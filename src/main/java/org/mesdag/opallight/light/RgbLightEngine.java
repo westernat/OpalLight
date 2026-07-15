@@ -6,6 +6,7 @@ import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongConsumer;
@@ -19,12 +20,12 @@ final class RgbLightEngine {
 
         /** CPU 网格快照读取冻结光场，不允许回到仍可变化的 owner 引擎。 */
         int lightAt(long position) {
-            return light.getForTest(position);
+            return light.get(position);
         }
 
         /** 已冻结的直接发光值用于排除光源方块自身的遮罩几何。 */
         int directEmissionAt(long position) {
-            return directEmissions.getForTest(position);
+            return directEmissions.get(position);
         }
 
         void collectLightSectionKeys(LongSet output) {
@@ -41,19 +42,25 @@ final class RgbLightEngine {
 
         private PendingWork(ChunkSnapshot base, long[] changedPositions) {
             this.base = base;
-            this.changedPositions = changedPositions.clone();
+            // 调用方传入刚从 owner 集合生成的私有数组，直接接管可避免大批量更新再复制一次。
+            this.changedPositions = changedPositions;
         }
 
         int changedBlockCount() {
             return changedPositions.length;
         }
 
-        LongOpenHashSet changedPositions() {
-            return new LongOpenHashSet(changedPositions);
+        /** 仅供同包快照捕获顺序读取；返回的私有视图不得修改或保留。 */
+        long[] changedPositions() {
+            return changedPositions;
         }
 
         int baseLight(long pos) {
-            return base.light.getForTest(pos);
+            return base.light.get(pos);
+        }
+
+        boolean hasBaseLight() {
+            return base.light.sectionCount() != 0;
         }
     }
 
@@ -95,6 +102,7 @@ final class RgbLightEngine {
 
         /** 捕获域边缘来自未变化区域的冻结 RGB；同步 live access 默认没有显式边界。 */
         default void forEachBoundarySeed(BoundarySeedConsumer consumer) {
+            Objects.requireNonNull(consumer, "consumer");
         }
     }
 
@@ -145,8 +153,8 @@ final class RgbLightEngine {
      * 记录仅影响模型几何、不影响 RGB 传播的变化。
      *
      * <p>该入口不得写入 {@link #changedBlocks}，否则一个方块实体的纹理或连接模型刷新
-     * 也会触发减光/增光遍历。只标记当前 section，以及方块恰好位于 section 边界时
-     * 可能引用它的相邻 section。</p>
+     * 也会触发减光/增光遍历。只标记当前 section，以及方块恰好位于 section 面、棱或角
+     * 边界时可能通过面角采样引用它的相邻 section。</p>
      */
     void queueMeshChange(long pos) {
         markBlockMeshDirty(pos);
@@ -166,6 +174,10 @@ final class RgbLightEngine {
     }
 
     boolean pendingChangesTouchExistingLight() {
+        // 冷启动时 RGB 体积尚未分配任何 section，所有位置都必然为零；避免为大批量放置逐个探测七次。
+        if (volume.allocatedSectionCount() == 0) {
+            return false;
+        }
         for (long pos : changedBlocks) {
             if (volume.get(pos) != 0) {
                 return true;
@@ -313,7 +325,7 @@ final class RgbLightEngine {
         int queuedChanges = 0;
         for (long pos : work.changedPositions) {
             if ((queuedChanges++ & 255) == 0 && cancellation.getAsBoolean()) {
-                throw new CancellationException("RGB candidate 已过期");
+                throw new CancellationException("RGB candidate is stale");
             }
             candidate.queueBlockChange(pos);
         }
@@ -371,7 +383,7 @@ final class RgbLightEngine {
      */
     void rebasePendingChanges(ChunkSnapshot snapshot) {
         if (!decreaseQueue.isEmpty() || !increaseQueue.isEmpty()) {
-            throw new IllegalStateException("传播队列处理中不能重设 GPU staging 的 CPU 基底");
+            throw new IllegalStateException("Cannot reset the GPU staging CPU base while propagation queues are active");
         }
         LongOpenHashSet pendingChanges = new LongOpenHashSet(changedBlocks);
         LongOpenHashSet pendingMeshSections = new LongOpenHashSet(dirtyMeshSections);
@@ -387,7 +399,7 @@ final class RgbLightEngine {
      *
      * <p>只有上层已经用完整的已加载域光源索引证明“当前没有任何直射彩光源”，并且没有
      * 待恢复/待扫描区块时才能调用。此时继续执行 decrease BFS 的数学结果必然仍是全零，
-     * 因而可以清空光场和传播队列；但旧光场覆盖过的 section 及其六个相邻 section 仍必须
+     * 因而可以清空光场和传播队列；但旧光场覆盖过的 section 及其 26 个相邻 section 仍必须
      * 标脏，让渲染层一次性撤销旧 VBO。调用前由方块/模型回调积累的 dirty section 也必须
      * 保留，否则灯笼替换为空气时可能留下旧几何。</p>
      */
@@ -412,7 +424,7 @@ final class RgbLightEngine {
     private Stats process(Access access, BooleanSupplier cancellation) {
         SliceResult result = processUntil(access, cancellation, Long.MAX_VALUE);
         if (!result.complete()) {
-            throw new IllegalStateException("无限预算的 RGB 传播不应被中断");
+            throw new IllegalStateException("Unbounded RGB propagation must not be interrupted");
         }
         return result.stats();
     }
@@ -423,7 +435,7 @@ final class RgbLightEngine {
      */
     SliceResult processSlice(Access access, long budgetNanos) {
         if (budgetNanos <= 0L) {
-            throw new IllegalArgumentException("budgetNanos 必须为正数");
+            throw new IllegalArgumentException("budgetNanos must be positive");
         }
         long started = System.nanoTime();
         long deadline = budgetNanos >= Long.MAX_VALUE - started
@@ -626,7 +638,7 @@ final class RgbLightEngine {
 
     private static boolean shouldYield(BooleanSupplier cancellation, long deadlineNanos) {
         if (cancellation.getAsBoolean()) {
-            throw new CancellationException("RGB candidate 已过期");
+            throw new CancellationException("RGB candidate is stale");
         }
         return deadlineNanos != Long.MAX_VALUE && System.nanoTime() >= deadlineNanos;
     }
@@ -693,29 +705,11 @@ final class RgbLightEngine {
     }
 
     private void markBlockMeshDirty(long pos) {
-        addDirtySection(PackedPosition.sectionKey(pos));
-        int localX = PackedPosition.x(pos) & 15;
-        int localY = PackedPosition.y(pos) & 15;
-        int localZ = PackedPosition.z(pos) & 15;
-        if (localX == 0) addDirtySection(PackedPosition.sectionKey(PackedPosition.offset(pos, 4)));
-        if (localX == 15) addDirtySection(PackedPosition.sectionKey(PackedPosition.offset(pos, 5)));
-        if (localY == 0) addDirtySection(PackedPosition.sectionKey(PackedPosition.offset(pos, 0)));
-        if (localY == 15) addDirtySection(PackedPosition.sectionKey(PackedPosition.offset(pos, 1)));
-        if (localZ == 0) addDirtySection(PackedPosition.sectionKey(PackedPosition.offset(pos, 2)));
-        if (localZ == 15) addDirtySection(PackedPosition.sectionKey(PackedPosition.offset(pos, 3)));
+        LightMaskMeshPrefilter.forEachBlockMeshSection(pos, this::addDirtySection);
     }
 
     private void markLightSectionDirty(long sectionKey) {
-        int sectionX = PackedPosition.sectionX(sectionKey);
-        int sectionY = PackedPosition.sectionY(sectionKey);
-        int sectionZ = PackedPosition.sectionZ(sectionKey);
-        addDirtySection(sectionKey);
-        addDirtySection(PackedPosition.sectionKey(sectionX - 1, sectionY, sectionZ));
-        addDirtySection(PackedPosition.sectionKey(sectionX + 1, sectionY, sectionZ));
-        addDirtySection(PackedPosition.sectionKey(sectionX, sectionY - 1, sectionZ));
-        addDirtySection(PackedPosition.sectionKey(sectionX, sectionY + 1, sectionZ));
-        addDirtySection(PackedPosition.sectionKey(sectionX, sectionY, sectionZ - 1));
-        addDirtySection(PackedPosition.sectionKey(sectionX, sectionY, sectionZ + 1));
+        LightMaskMeshPrefilter.forEachSectionSamplingHalo(sectionKey, this::addDirtySection);
     }
 
     private void addDirtySection(long sectionKey) {

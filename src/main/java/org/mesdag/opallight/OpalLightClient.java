@@ -12,8 +12,6 @@ import net.neoforged.neoforge.client.event.RegisterColorHandlersEvent;
 @Mod(value = OpalLight.MODID, dist = Dist.CLIENT)
 @EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public class OpalLightClient {
-    public OpalLightClient() {}
-
     @SubscribeEvent
     public static void registerColorHandlers$Block(RegisterColorHandlersEvent.Block event) {
         for (DyeColor color : OpalLight.COLORS) {

@@ -1,5 +1,7 @@
 package org.mesdag.opallight.light;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
@@ -21,11 +23,6 @@ import java.util.function.Consumer;
  */
 final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     @FunctionalInterface
-    interface Builder<I, O> {
-        O build(I input) throws Exception;
-    }
-
-    @FunctionalInterface
     interface CancellableBuilder<I, O> {
         O build(I input, CancellationToken cancellation) throws Exception;
     }
@@ -35,23 +32,7 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
         boolean isCancelled();
     }
 
-    enum SubmitState {
-        STARTED,
-        QUEUED,
-        REPLACED
-    }
-
     record Completed<K, O>(K key, O value, long workerNanos) {
-    }
-
-    record State(
-            boolean running,
-            int pendingTasks,
-            int completedTasks,
-            long submittedTasks,
-            long discardedTasks,
-            long cancelledTasks
-    ) {
     }
 
     private static final class Task<K, I> {
@@ -78,12 +59,8 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
             return input;
         }
 
-        boolean cancel() {
-            if (cancelled) {
-                return false;
-            }
+        void cancel() {
             cancelled = true;
-            return true;
         }
 
         boolean isCancelled() {
@@ -93,8 +70,7 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
 
     private final ExecutorService executor;
     private final CancellableBuilder<I, O> builder;
-    private final Consumer<I> inputDisposer;
-    private final Consumer<O> resultDisposer;
+    private final @Nullable Consumer<O> resultDisposer;
 
     private Task<K, I> running;
     private Task<K, I> pending;
@@ -103,71 +79,56 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     private long failureSequence = -1L;
     private long nextSequence;
     private long latestSequence;
-    private long submittedTasks;
-    private long discardedTasks;
-    private long cancelledTasks;
     private boolean closed;
 
     GenerationCoordinator(
             String threadName,
-            Builder<I, O> builder,
-            Consumer<I> inputDisposer,
-            Consumer<O> resultDisposer
+            CancellableBuilder<I, O> builder
     ) {
-        this(threadName, adapt(builder), inputDisposer, resultDisposer);
+        this(threadName, builder, null);
     }
 
     GenerationCoordinator(
             String threadName,
             CancellableBuilder<I, O> builder,
-            Consumer<I> inputDisposer,
-            Consumer<O> resultDisposer
+            @Nullable Consumer<O> resultDisposer
     ) {
         Objects.requireNonNull(threadName, "threadName");
         this.builder = Objects.requireNonNull(builder, "builder");
-        this.inputDisposer = Objects.requireNonNull(inputDisposer, "inputDisposer");
-        this.resultDisposer = Objects.requireNonNull(resultDisposer, "resultDisposer");
+        this.resultDisposer = resultDisposer;
         ThreadFactory threadFactory = runnable -> {
             Thread thread = new Thread(runnable, threadName);
             thread.setDaemon(true);
             return thread;
-        };
+         };
         executor = Executors.newSingleThreadExecutor(threadFactory);
     }
 
-    SubmitState submit(K key, I input) {
+    void submit(K key, I input) {
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(input, "input");
-        Task<K, I> discardedInput = null;
         SequencedCompleted<K, O> discardedResult;
         Task<K, I> task;
-        SubmitState state;
         boolean start;
         synchronized (this) {
             ensureOpen();
             long sequence = ++nextSequence;
             latestSequence = sequence;
             clearFailure();
-            submittedTasks++;
             discardedResult = detachCompleted();
             task = new Task<>(sequence, key, input);
             start = running == null;
             if (start) {
                 running = task;
-                state = SubmitState.STARTED;
             } else {
                 cancelRunning();
-                state = pending == null ? SubmitState.QUEUED : SubmitState.REPLACED;
-                discardedInput = pending;
                 pending = task;
             }
         }
         scheduleResultDisposal(discardedResult);
-        scheduleInputDisposal(discardedInput);
         if (start) {
             execute(task);
         }
-        return state;
     }
 
     /**
@@ -185,7 +146,6 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
             if (candidate.sequence == latestSequence && candidate.completed.key().equals(currentKey)) {
                 return Optional.of(candidate.completed);
             }
-            discardedTasks++;
         }
         scheduleResultDisposal(candidate);
         return Optional.empty();
@@ -195,32 +155,19 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
      * 使所有已提交 revision 过期；运行中的任务允许自然结束，但其结果只能被销毁。
      */
     void invalidate() {
-        Task<K, I> discardedInput;
         SequencedCompleted<K, O> discardedResult;
         synchronized (this) {
             latestSequence = ++nextSequence;
             clearFailure();
             cancelRunning();
-            discardedInput = pending;
             pending = null;
             discardedResult = detachCompleted();
-            if (discardedInput != null) {
-                discardedTasks++;
-            }
         }
-        scheduleInputDisposal(discardedInput, false);
         scheduleResultDisposal(discardedResult);
     }
 
-    synchronized State state() {
-        return new State(
-                running != null,
-                pending == null ? 0 : 1,
-                completed == null ? 0 : 1,
-                submittedTasks,
-                discardedTasks,
-                cancelledTasks
-        );
+    synchronized boolean hasWork() {
+        return running != null || pending != null || completed != null;
     }
 
     synchronized Optional<Throwable> takeFailure() {
@@ -231,7 +178,6 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
 
     @Override
     public void close() {
-        Task<K, I> discardedInput;
         SequencedCompleted<K, O> discardedResult;
         synchronized (this) {
             if (closed) {
@@ -241,14 +187,9 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
             latestSequence = ++nextSequence;
             clearFailure();
             cancelRunning();
-            discardedInput = pending;
             pending = null;
-            if (discardedInput != null) {
-                discardedTasks++;
-            }
             discardedResult = detachCompleted();
         }
-        scheduleInputDisposal(discardedInput, false);
         scheduleResultDisposal(discardedResult);
         // running 任务通过 cancellation token 自行退出；保留队列中的资源清理，不用 shutdownNow 丢弃 owner。
         executor.shutdown();
@@ -290,7 +231,6 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
             } else if (result != null) {
                 if (closed || task.sequence() != latestSequence) {
                     discardedResult = result;
-                    discardedTasks++;
                     disposeInline = closed;
                 } else {
                     discardedCompleted = detachCompleted();
@@ -325,7 +265,7 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
 
     private void ensureOpen() {
         if (closed) {
-            throw new IllegalStateException("GenerationCoordinator 已关闭");
+            throw new IllegalStateException("GenerationCoordinator is closed");
         }
     }
 
@@ -333,39 +273,7 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     private SequencedCompleted<K, O> detachCompleted() {
         SequencedCompleted<K, O> result = completed;
         completed = null;
-        if (result != null) {
-            discardedTasks++;
-        }
         return result;
-    }
-
-    private void scheduleInputDisposal(Task<K, I> task) {
-        if (task != null) {
-            synchronized (this) {
-                discardedTasks++;
-            }
-            scheduleInputDisposal(task, true);
-        }
-    }
-
-    private void scheduleInputDisposal(Task<K, I> task, boolean alreadyCounted) {
-        if (task == null) {
-            return;
-        }
-        if (!alreadyCounted) {
-            // 该重载的现有调用方都在摘除 owner 的临界区内计数；保留参数让约束在调用点可见。
-        }
-        scheduleCleanup(() -> disposeInput(task.sequence(), task.input()));
-    }
-
-    private void disposeInput(long sequence, I input) {
-        try {
-            inputDisposer.accept(input);
-        } catch (RuntimeException exception) {
-            synchronized (this) {
-                recordFailure(sequence, exception);
-            }
-        }
     }
 
     private void scheduleResultDisposal(SequencedCompleted<K, O> result) {
@@ -375,6 +283,9 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     }
 
     private void scheduleResultDisposal(long sequence, O result) {
+        if (resultDisposer == null) {
+            return;
+        }
         scheduleCleanup(() -> disposeResult(sequence, result));
     }
 
@@ -389,8 +300,12 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     }
 
     private void disposeResult(long sequence, O result) {
+        Consumer<O> disposer = resultDisposer;
+        if (disposer == null) {
+            return;
+        }
         try {
-            resultDisposer.accept(result);
+            disposer.accept(result);
         } catch (RuntimeException exception) {
             synchronized (this) {
                 recordFailure(sequence, exception);
@@ -398,10 +313,10 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
         }
     }
 
-    /** 统计已发出的 running 协作取消请求；同一任务无论被重复失效多少次只计一次。 */
+    /** 使正在运行的任务尽快在协作取消点退出。 */
     private void cancelRunning() {
-        if (running != null && running.cancel()) {
-            cancelledTasks++;
+        if (running != null) {
+            running.cancel();
         }
     }
 
@@ -420,11 +335,6 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     private void clearFailure() {
         failure = null;
         failureSequence = -1L;
-    }
-
-    private static <I, O> CancellableBuilder<I, O> adapt(Builder<I, O> builder) {
-        Objects.requireNonNull(builder, "builder");
-        return (input, cancellation) -> builder.build(input);
     }
 
     private record SequencedCompleted<K, O>(long sequence, Completed<K, O> completed) {

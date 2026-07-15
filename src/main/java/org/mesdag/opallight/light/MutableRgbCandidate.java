@@ -11,22 +11,15 @@ import java.util.function.LongFunction;
 final class MutableRgbCandidate {
     private final FrozenRgbState base;
     private final ComponentCandidate light;
-    private final ComponentCandidate directEmission;
     private boolean sealed;
 
     MutableRgbCandidate(FrozenRgbState base) {
         this.base = base;
         light = new ComponentCandidate(base::lightSectionView, base::forEachLightSectionKey);
-        directEmission = new ComponentCandidate(
-                base::directEmissionSectionView, base::forEachDirectEmissionSectionKey);
     }
 
     int getLight(long pos) {
         return light.get(pos);
-    }
-
-    int getDirectEmission(long pos) {
-        return directEmission.get(pos);
     }
 
     boolean setLight(long pos, int value) {
@@ -34,79 +27,39 @@ final class MutableRgbCandidate {
         return light.set(pos, value);
     }
 
-    boolean setDirectEmission(long pos, int value) {
-        ensureWritable();
-        return directEmission.set(pos, value);
-    }
-
     int lightSectionCount() {
         return light.sectionCount();
-    }
-
-    int directEmissionSectionCount() {
-        return directEmission.sectionCount();
     }
 
     void forEachLightSectionKey(LongConsumer consumer) {
         light.forEachSectionKey(consumer);
     }
 
-    void forEachDirectEmissionSectionKey(LongConsumer consumer) {
-        directEmission.forEachSectionKey(consumer);
-    }
-
     void forEachNonZeroLight(long sectionKey, FrozenRgbState.LightConsumer consumer) {
         light.forEachNonZero(sectionKey, consumer);
     }
 
-    void forEachNonZeroDirectEmission(long sectionKey, FrozenRgbState.LightConsumer consumer) {
-        directEmission.forEachNonZero(sectionKey, consumer);
-    }
-
     /** 删除指定 chunk 的传播光 section，并报告位于 X/Z 外缘上的非零值。 */
-    int removeLightChunk(int chunkX, int chunkZ, FrozenRgbState.LightConsumer removedBoundary) {
+    void removeLightChunk(int chunkX, int chunkZ, FrozenRgbState.LightConsumer removedBoundary) {
         ensureWritable();
-        return light.removeChunk(chunkX, chunkZ, removedBoundary, true);
-    }
-
-    /** 删除指定 chunk 的直接发光 section；直接发光不参与跨 chunk 边界回灌。 */
-    int removeDirectEmissionChunk(int chunkX, int chunkZ) {
-        ensureWritable();
-        return directEmission.removeChunk(chunkX, chunkZ, null, false);
+        light.removeChunk(chunkX, chunkZ, removedBoundary);
     }
 
     FrozenRgbState freeze() {
         ensureWritable();
         sealed = true;
-        if (!light.changed() && !directEmission.changed()) {
+        if (!light.changed()) {
             return base;
         }
         Long2ObjectOpenHashMap<RgbSectionView> lights = light.freezeSections();
-        Long2ObjectOpenHashMap<RgbSectionView> direct = directEmission.freezeSections();
-        return lights.isEmpty() && direct.isEmpty()
+        return lights.isEmpty()
                 ? FrozenRgbState.EMPTY
-                : new FrozenRgbState(lights, direct);
-    }
-
-    int lightCloneCountForTest() {
-        return light.cloneCount;
-    }
-
-    int directEmissionCloneCountForTest() {
-        return directEmission.cloneCount;
-    }
-
-    Object lightSectionIdentityForTest(long sectionKey) {
-        return light.identity(sectionKey);
-    }
-
-    Object directEmissionSectionIdentityForTest(long sectionKey) {
-        return directEmission.identity(sectionKey);
+                : new FrozenRgbState(lights);
     }
 
     private void ensureWritable() {
         if (sealed) {
-            throw new IllegalStateException("RGB candidate 已冻结，不能继续修改或再次发布");
+            throw new IllegalStateException("RGB candidate is frozen and cannot be modified or published again");
         }
     }
 
@@ -116,7 +69,6 @@ final class MutableRgbCandidate {
         private final Consumer<LongConsumer> baseKeyTraversal;
         private final Long2ObjectOpenHashMap<MutableSection> modified = new Long2ObjectOpenHashMap<>();
         private final LongOpenHashSet removed = new LongOpenHashSet();
-        private int cloneCount;
 
         private ComponentCandidate(LongFunction<RgbSectionView> baseLookup,
                                    Consumer<LongConsumer> baseKeyTraversal) {
@@ -146,7 +98,6 @@ final class MutableRgbCandidate {
                     writable = new MutableSection();
                 } else {
                     writable = new MutableSection(current);
-                    cloneCount++;
                 }
                 modified.put(sectionKey, writable);
                 removed.remove(sectionKey);
@@ -176,10 +127,8 @@ final class MutableRgbCandidate {
             }
         }
 
-        private int removeChunk(int chunkX, int chunkZ, FrozenRgbState.LightConsumer consumer,
-                                boolean boundaryOnly) {
+        private void removeChunk(int chunkX, int chunkZ, FrozenRgbState.LightConsumer consumer) {
             LongOpenHashSet keys = effectiveKeys();
-            int removedCount = 0;
             for (long sectionKey : keys) {
                 if (PackedPosition.sectionX(sectionKey) != chunkX || PackedPosition.sectionZ(sectionKey) != chunkZ) {
                     continue;
@@ -189,7 +138,7 @@ final class MutableRgbCandidate {
                     payload.forEachNonZero(sectionKey, (pos, value) -> {
                         int localX = PackedPosition.x(pos) & 15;
                         int localZ = PackedPosition.z(pos) & 15;
-                        if (!boundaryOnly || localX == 0 || localX == 15 || localZ == 0 || localZ == 15) {
+                        if (localX == 0 || localX == 15 || localZ == 0 || localZ == 15) {
                             consumer.accept(pos, value);
                         }
                     });
@@ -198,9 +147,7 @@ final class MutableRgbCandidate {
                 if (baseLookup.apply(sectionKey) != null) {
                     removed.add(sectionKey);
                 }
-                removedCount++;
             }
-            return removedCount;
         }
 
         private RgbSectionView payload(long sectionKey) {
@@ -234,10 +181,6 @@ final class MutableRgbCandidate {
             return sections;
         }
 
-        private Object identity(long sectionKey) {
-            RgbSectionView payload = payload(sectionKey);
-            return payload == null ? null : payload.identityToken();
-        }
     }
 
     /**
@@ -245,14 +188,15 @@ final class MutableRgbCandidate {
      * 当作 {@link RgbSectionView} 保存，因此不会暴露此处的私有 set 方法。
      */
     private static final class MutableSection implements RgbSectionView {
-        private final short[] values = new short[4096];
-        private final Object identityToken = new Object();
+        private final short[] values;
         private int nonZeroCount;
 
         private MutableSection() {
+            values = new short[4096];
         }
 
         private MutableSection(RgbSectionView source) {
+            this();
             source.copyValuesTo(values);
             nonZeroCount = source.nonZeroCount();
         }
@@ -282,14 +226,9 @@ final class MutableRgbCandidate {
         }
 
         @Override
-        public Object identityToken() {
-            return identityToken;
-        }
-
-        @Override
         public void copyValuesTo(short[] destination) {
             if (destination.length != values.length) {
-                throw new IllegalArgumentException("目标数组长度必须为 4096");
+                throw new IllegalArgumentException("Destination array length must be 4096");
             }
             System.arraycopy(values, 0, destination, 0, values.length);
         }

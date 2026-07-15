@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Arrays;
 
@@ -15,35 +16,35 @@ import java.util.Arrays;
  */
 final class SourceRegistry {
     private static final int PACKED_LIGHT_MASK = 0xFFF;
-    private static final long SIZE_MIX = 0x9E3779B97F4A7C15L;
 
     private final Long2IntOpenHashMap emissionsByPosition = new Long2IntOpenHashMap();
     private final Long2ObjectOpenHashMap<LongOpenHashSet> positionsByChunk = new Long2ObjectOpenHashMap<>();
-    private long tupleDigest;
+    private @Nullable FrozenIdentity frozenIdentity;
 
     SourceRegistry() {
         emissionsByPosition.defaultReturnValue(0);
     }
 
     /**
-     * 新增或替换一个光源，返回替换前的低十二位光值。
+     * 新增或替换一个光源。
      * 高位与 {@link PackedLight} 的读取语义一致，会被规范化丢弃；规范化为零等同删除。
      */
-    int put(long position, int packedEmission) {
+    void put(long position, int packedEmission) {
         int normalized = packedEmission & PACKED_LIGHT_MASK;
         int previous = emissionsByPosition.get(position);
         if (previous == normalized) {
-            return previous;
+            return;
         }
         if (normalized == 0) {
             remove(position);
-            return previous;
+            return;
         }
+        frozenIdentity = null;
 
         if (previous == 0) {
             emissionsByPosition.put(position, normalized);
             long chunkKey = chunkKey(position);
-            LongOpenHashSet chunkPositions = positionsByChunk.get(chunkKey);
+            @Nullable LongOpenHashSet chunkPositions = positionsByChunk.get(chunkKey);
             if (chunkPositions == null) {
                 chunkPositions = new LongOpenHashSet();
                 positionsByChunk.put(chunkKey, chunkPositions);
@@ -51,53 +52,40 @@ final class SourceRegistry {
             chunkPositions.add(position);
         } else {
             emissionsByPosition.put(position, normalized);
-            tupleDigest ^= tupleDigest(position, previous);
         }
-        tupleDigest ^= tupleDigest(position, normalized);
-        return previous;
     }
 
-    /** 删除单个位置并返回原值；不存在时返回零。 */
-    int remove(long position) {
+    /** 删除单个位置。 */
+    private void remove(long position) {
         int previous = emissionsByPosition.remove(position);
         if (previous == 0) {
-            return 0;
+            return;
         }
+        frozenIdentity = null;
 
-        tupleDigest ^= tupleDigest(position, previous);
         long chunkKey = chunkKey(position);
-        LongOpenHashSet chunkPositions = positionsByChunk.get(chunkKey);
+        @Nullable LongOpenHashSet chunkPositions = positionsByChunk.get(chunkKey);
         if (chunkPositions != null) {
             chunkPositions.remove(position);
             if (chunkPositions.isEmpty()) {
                 positionsByChunk.remove(chunkKey);
             }
         }
-        return previous;
-    }
-
-    /** 删除指定区块内的全部光源，并返回实际删除数量。 */
-    int removeChunk(int chunkX, int chunkZ) {
-        return removeChunk(packChunk(chunkX, chunkZ));
     }
 
     /** 删除由 Minecraft 区块长整型编码指定的全部光源。 */
-    int removeChunk(long chunkKey) {
+    void removeChunk(long chunkKey) {
         LongOpenHashSet positions = positionsByChunk.remove(chunkKey);
         if (positions == null) {
-            return 0;
+            return;
         }
+        frozenIdentity = null;
 
-        int removed = positions.size();
         LongIterator iterator = positions.iterator();
         while (iterator.hasNext()) {
             long position = iterator.nextLong();
-            int emission = emissionsByPosition.remove(position);
-            if (emission != 0) {
-                tupleDigest ^= tupleDigest(position, emission);
-            }
+            emissionsByPosition.remove(position);
         }
-        return removed;
     }
 
     int get(long position) {
@@ -119,12 +107,7 @@ final class SourceRegistry {
     void clear() {
         emissionsByPosition.clear();
         positionsByChunk.clear();
-        tupleDigest = 0L;
-    }
-
-    /** 返回用于候选定位的 O(1) 摘要；最终命中仍必须比较冻结元组。 */
-    long fastDigest() {
-        return mix64(tupleDigest ^ (long) size() * SIZE_MIX);
+        frozenIdentity = null;
     }
 
     /**
@@ -132,13 +115,23 @@ final class SourceRegistry {
      * 冻结成本只在缓存身份建立时支付，不进入方块逐次变更的热路径。
      */
     FrozenIdentity freezeIdentity() {
+        @Nullable FrozenIdentity cached = frozenIdentity;
+        if (cached != null) {
+            return cached;
+        }
         long[] positions = emissionsByPosition.keySet().toLongArray();
         Arrays.sort(positions);
-        int[] emissions = new int[positions.length];
+        short[] emissions = new short[positions.length];
         for (int index = 0; index < positions.length; index++) {
-            emissions[index] = emissionsByPosition.get(positions[index]);
+            emissions[index] = (short) emissionsByPosition.get(positions[index]);
         }
-        return new FrozenIdentity(fastDigest(), positions, emissions);
+        FrozenIdentity frozen = new FrozenIdentity(
+                positions,
+                emissions,
+                positionsByChunk.keySet().toLongArray()
+        );
+        frozenIdentity = frozen;
+        return frozen;
     }
 
     private static long chunkKey(long position) {
@@ -150,81 +143,46 @@ final class SourceRegistry {
         return (long) chunkX & 0xFFFFFFFFL | ((long) chunkZ & 0xFFFFFFFFL) << 32;
     }
 
-    private static long tupleDigest(long position, int emission) {
-        return mix64(position ^ Integer.toUnsignedLong(emission) * SIZE_MIX);
-    }
-
-    private static long mix64(long value) {
-        value ^= value >>> 30;
-        value *= 0xBF58476D1CE4E5B9L;
-        value ^= value >>> 27;
-        value *= 0x94D049BB133111EBL;
-        return value ^ value >>> 31;
-    }
-
     /**
      * 不可变、规范排序的精确光源身份。
-     * 摘要仅用于快速排除；摘要相同后仍逐项比较位置和光值，因而不会把哈希碰撞当作命中。
+     * 两个数组均由冻结过程新建并转交给最终缓存键，注册表之后不会再修改它们。
      */
     static final class FrozenIdentity {
-        private final long fastDigest;
         private final long[] positions;
-        private final int[] emissions;
+        private final short[] emissions;
+        private final long[] chunkKeys;
 
-        FrozenIdentity(long fastDigest, long[] positions, int[] emissions) {
+        FrozenIdentity(long[] positions, short[] emissions, long[] chunkKeys) {
             if (positions.length != emissions.length) {
-                throw new IllegalArgumentException("光源位置与光值数量不一致");
+                throw new IllegalArgumentException("Source positions and light values must have the same length");
             }
             for (int index = 0; index < positions.length; index++) {
                 if (index > 0 && positions[index - 1] >= positions[index]) {
-                    throw new IllegalArgumentException("光源位置必须严格递增且不能重复");
+                    throw new IllegalArgumentException("Source positions must be strictly increasing and unique");
                 }
-                if (emissions[index] == 0 || (emissions[index] & ~PACKED_LIGHT_MASK) != 0) {
-                    throw new IllegalArgumentException("冻结光值必须是非零的低十二位 PackedLight");
+                int emission = Short.toUnsignedInt(emissions[index]);
+                if (emission == 0 || (emission & ~PACKED_LIGHT_MASK) != 0) {
+                    throw new IllegalArgumentException("Frozen light values must be nonzero 12-bit PackedLight values");
                 }
             }
-            this.fastDigest = fastDigest;
-            this.positions = positions.clone();
-            this.emissions = emissions.clone();
+            this.positions = positions;
+            this.emissions = emissions;
+            this.chunkKeys = chunkKeys;
         }
 
-        long fastDigest() {
-            return fastDigest;
+        /** 返回所有权已冻结的数组，只允许最终缓存键接管，调用方不得修改。 */
+        long[] positionsView() {
+            return positions;
         }
 
-        int size() {
-            return positions.length;
+        /** 返回与位置平行的 12 位光值数组，只允许最终缓存键接管，调用方不得修改。 */
+        short[] emissionsView() {
+            return emissions;
         }
 
-        long positionAt(int index) {
-            return positions[index];
-        }
-
-        int emissionAt(int index) {
-            return emissions[index];
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) {
-                return true;
-            }
-            if (!(other instanceof FrozenIdentity identity)) {
-                return false;
-            }
-            return fastDigest == identity.fastDigest
-                    && Arrays.equals(positions, identity.positions)
-                    && Arrays.equals(emissions, identity.emissions);
-        }
-
-        @Override
-        public int hashCode() {
-            return Long.hashCode(fastDigest);
-        }
-
-        @Override
-        public String toString() {
-            return "FrozenIdentity{size=" + positions.length + ", fastDigest=" + fastDigest + '}';
+        /** 返回去重后的光源区块键，只允许依赖域构建过程只读使用。 */
+        long[] chunkKeysView() {
+            return chunkKeys;
         }
     }
 }

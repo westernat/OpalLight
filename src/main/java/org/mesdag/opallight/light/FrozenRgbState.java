@@ -8,9 +8,8 @@ import java.util.function.LongConsumer;
 /**
  * 一代已经发布的不可变 RGB CPU 状态。
  *
- * <p>传播光与直接发光分别使用稀疏 section 表。每个已分配 section 恰好保存
- * 4096 个 {@code short}，因此这里报告的字节数是精确的 RGB 载荷字节数，不把
- * 哈希表对象头等 JVM 实现细节混入缓存权重。</p>
+ * <p>每个光照分量各自持有一份此状态，并使用稀疏 section 表保存非零区域。每个已分配
+ * section 恰好保存 4096 个 {@code short}；发布后只共享只读 section，不再深复制载荷。</p>
  */
 final class FrozenRgbState {
     @FunctionalInterface
@@ -18,18 +17,13 @@ final class FrozenRgbState {
         void accept(long pos, int light);
     }
 
-    private static final long SECTION_BYTES = 4096L * Short.BYTES;
-    static final FrozenRgbState EMPTY = new FrozenRgbState(
-            new Long2ObjectOpenHashMap<>(), new Long2ObjectOpenHashMap<>());
+    static final FrozenRgbState EMPTY = new FrozenRgbState(new Long2ObjectOpenHashMap<>());
 
     private final Long2ObjectOpenHashMap<RgbSectionView> lightSections;
-    private final Long2ObjectOpenHashMap<RgbSectionView> directEmissionSections;
 
-    FrozenRgbState(Long2ObjectOpenHashMap<RgbSectionView> lightSections,
-                   Long2ObjectOpenHashMap<RgbSectionView> directEmissionSections) {
+    FrozenRgbState(Long2ObjectOpenHashMap<RgbSectionView> lightSections) {
         // 防御性复制索引，避免构造方随后修改 map；section 只读视图仍可安全共享。
         this.lightSections = new Long2ObjectOpenHashMap<>(lightSections);
-        this.directEmissionSections = new Long2ObjectOpenHashMap<>(directEmissionSections);
     }
 
     MutableRgbCandidate mutableCandidate() {
@@ -40,48 +34,16 @@ final class FrozenRgbState {
         return get(lightSections, pos);
     }
 
-    int getDirectEmission(long pos) {
-        return get(directEmissionSections, pos);
-    }
-
     int lightSectionCount() {
         return lightSections.size();
-    }
-
-    int directEmissionSectionCount() {
-        return directEmissionSections.size();
-    }
-
-    int sectionCount() {
-        return lightSections.size() + directEmissionSections.size();
-    }
-
-    long lightByteCount() {
-        return lightSections.size() * SECTION_BYTES;
-    }
-
-    long directEmissionByteCount() {
-        return directEmissionSections.size() * SECTION_BYTES;
-    }
-
-    long byteCount() {
-        return sectionCount() * SECTION_BYTES;
     }
 
     void forEachLightSectionKey(LongConsumer consumer) {
         lightSections.keySet().forEach(consumer);
     }
 
-    void forEachDirectEmissionSectionKey(LongConsumer consumer) {
-        directEmissionSections.keySet().forEach(consumer);
-    }
-
     void forEachNonZeroLight(long sectionKey, LightConsumer consumer) {
         forEachNonZero(lightSections.get(sectionKey), sectionKey, consumer);
-    }
-
-    void forEachNonZeroDirectEmission(long sectionKey, LightConsumer consumer) {
-        forEachNonZero(directEmissionSections.get(sectionKey), sectionKey, consumer);
     }
 
     /**
@@ -90,24 +52,11 @@ final class FrozenRgbState {
      */
     FrozenRgbState chunkSubset(int chunkX, int chunkZ) {
         Long2ObjectOpenHashMap<RgbSectionView> lights = chunkSubset(lightSections, chunkX, chunkZ);
-        Long2ObjectOpenHashMap<RgbSectionView> direct = chunkSubset(directEmissionSections, chunkX, chunkZ);
-        return lights.isEmpty() && direct.isEmpty() ? EMPTY : new FrozenRgbState(lights, direct);
+        return lights.isEmpty() ? EMPTY : new FrozenRgbState(lights);
     }
 
     RgbSectionView lightSectionView(long sectionKey) {
         return lightSections.get(sectionKey);
-    }
-
-    RgbSectionView directEmissionSectionView(long sectionKey) {
-        return directEmissionSections.get(sectionKey);
-    }
-
-    Object lightSectionIdentityForTest(long sectionKey) {
-        return identity(lightSections.get(sectionKey));
-    }
-
-    Object directEmissionSectionIdentityForTest(long sectionKey) {
-        return identity(directEmissionSections.get(sectionKey));
     }
 
     private static int get(Long2ObjectOpenHashMap<RgbSectionView> sections, long pos) {
@@ -133,9 +82,6 @@ final class FrozenRgbState {
         return subset;
     }
 
-    private static Object identity(RgbSectionView payload) {
-        return payload == null ? null : payload.identityToken();
-    }
 }
 
 /**
@@ -146,8 +92,6 @@ interface RgbSectionView {
     int get(int index);
 
     int nonZeroCount();
-
-    Object identityToken();
 
     void copyValuesTo(short[] destination);
 

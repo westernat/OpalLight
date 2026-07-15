@@ -22,20 +22,27 @@ final class BulkStateDependencies {
     private BulkStateDependencies() {
     }
 
-    static long[] relevantLoadedChunks(LongSet loadedChunks, LongSet lightSections, long[] sourcePositions) {
-        LongOpenHashSet relevantChunks = new LongOpenHashSet();
+    static long[] relevantLoadedChunks(LongSet loadedChunks, LongSet lightSections, long[] sourceChunkKeys) {
+        LongOpenHashSet dependencyChunks = new LongOpenHashSet(sourceChunkKeys);
+        // 同一区块可能包含多个垂直光照 section，先按区块合并，再统一展开一次 3×3 邻域。
         for (long sectionKey : lightSections) {
-            addChunkAndNeighbors(
-                    relevantChunks,
+            dependencyChunks.add(chunkKey(
                     PackedPosition.sectionX(sectionKey),
                     PackedPosition.sectionZ(sectionKey)
-            );
+            ));
         }
-        for (long sourcePosition : sourcePositions) {
+
+        int relevantCapacity = (int) Math.min(
+                1_048_576L,
+                (long) dependencyChunks.size() * 9L
+        );
+        // 这里只限制预分配规模，不限制集合最终容量；极端世界仍会按需正常扩容。
+        LongOpenHashSet relevantChunks = new LongOpenHashSet(relevantCapacity);
+        for (long dependencyChunk : dependencyChunks) {
             addChunkAndNeighbors(
                     relevantChunks,
-                    PackedPosition.x(sourcePosition) >> 4,
-                    PackedPosition.z(sourcePosition) >> 4
+                    (int) dependencyChunk,
+                    (int) (dependencyChunk >>> 32)
             );
         }
         relevantChunks.retainAll(loadedChunks);

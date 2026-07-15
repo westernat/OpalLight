@@ -14,6 +14,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.client.model.data.ModelData;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;
@@ -23,53 +24,86 @@ import java.util.concurrent.CancellationException;
  * CPU 网格 worker 的完整不可变输入。
  *
  * <p>渲染线程先从复制后的方块状态调色板解析模型、最终 ModelData 和六个面的可见性，worker
- * 只读取派生后的候选表。类中刻意不保存 {@code ClientLevel}、{@code Minecraft}、方块实体、
- * BlockGetter 或共享模型缓存，因此取消、换世界和资源重载后不会从后台继续读取可变游戏状态。</p>
+ * 只读取派生后的候选表。类中刻意不保存可变客户端世界、客户端单例、方块实体、世界访问器
+ * 或共享模型缓存，因此取消、换世界和资源重载后不会从后台继续读取可变游戏状态。</p>
  */
 final class MeshBuildSnapshot {
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final long MAX_WORKER_RESULT_BYTES = 64L * 1024L * 1024L;
 
-    record Candidate(
-            long position,
-            BlockState state,
-            BakedModel model,
-            ModelData modelData,
-            long seed,
-            int[] neighborLights,
-            boolean[] visibleFaces,
-            int unculledLight
-    ) {
-        Candidate {
-            Objects.requireNonNull(state, "state");
-            Objects.requireNonNull(model, "model");
-            Objects.requireNonNull(modelData, "modelData");
-            if (neighborLights.length != PackedPosition.DIRECTION_COUNT) {
-                throw new IllegalArgumentException("neighborLights 必须包含六个方向");
+    static final class Candidate {
+        private final long position;
+        private final BlockState state;
+        private final BakedModel model;
+        private final ModelData modelData;
+        private final long seed;
+        private final int[] faceCornerLights;
+        private final int visibleFaceMask;
+
+        Candidate(
+                long position,
+                BlockState state,
+                BakedModel model,
+                ModelData modelData,
+                long seed,
+                int[] faceCornerLights,
+                int visibleFaceMask
+        ) {
+            this.position = position;
+            this.state = Objects.requireNonNull(state, "state");
+            this.model = Objects.requireNonNull(model, "model");
+            this.modelData = Objects.requireNonNull(modelData, "modelData");
+            Objects.requireNonNull(faceCornerLights, "faceCornerLights");
+            if (faceCornerLights.length != LightMaskMeshPrefilter.FACE_SAMPLE_COUNT) {
+                throw new IllegalArgumentException("faceCornerLights must contain all 24 face corners");
             }
-            if (visibleFaces.length != PackedPosition.DIRECTION_COUNT) {
-                throw new IllegalArgumentException("visibleFaces 必须包含六个方向");
+            int validFaceBits = (1 << PackedPosition.DIRECTION_COUNT) - 1;
+            if ((visibleFaceMask & ~validFaceBits) != 0) {
+                throw new IllegalArgumentException("visibleFaceMask contains an unknown direction bit");
             }
-            neighborLights = neighborLights.clone();
-            visibleFaces = visibleFaces.clone();
+            this.seed = seed;
+            this.faceCornerLights = faceCornerLights.clone();
+            this.visibleFaceMask = visibleFaceMask;
         }
 
-        @Override
-        public int[] neighborLights() {
-            return neighborLights.clone();
+        long position() {
+            return position;
         }
 
-        @Override
-        public boolean[] visibleFaces() {
-            return visibleFaces.clone();
+        BlockState state() {
+            return state;
         }
 
-        int light(int directionIndex) {
-            return neighborLights[directionIndex];
+        BakedModel model() {
+            return model;
+        }
+
+        ModelData modelData() {
+            return modelData;
+        }
+
+        long seed() {
+            return seed;
+        }
+
+        boolean faceHasLight(int directionIndex) {
+            return LightMaskMeshPrefilter.faceHasLight(faceCornerLights, directionIndex);
         }
 
         boolean isFaceVisible(int directionIndex) {
-            return visibleFaces[directionIndex];
+            return (visibleFaceMask & 1 << directionIndex) != 0;
+        }
+
+        void smoothColor(
+                int directionIndex,
+                float x,
+                float y,
+                float z,
+                float[] output
+        ) {
+            LightMaskMeshPrefilter.smoothFaceColorAtVertex(
+                    faceCornerLights, directionIndex, x, y, z, output
+            );
         }
     }
 
@@ -80,10 +114,8 @@ final class MeshBuildSnapshot {
             Long2ObjectOpenHashMap<List<Candidate>> candidatesBySection,
             long[] targetSections
     ) {
-        this.candidatesBySection = new Long2ObjectOpenHashMap<>();
-        candidatesBySection.forEach((sectionKey, candidates) ->
-                this.candidatesBySection.put(sectionKey.longValue(), List.copyOf(candidates))
-        );
+        // 列表在 section 捕获完成后不再修改；只复制 Map 索引即可，避免再次复制所有候选引用。
+        this.candidatesBySection = new Long2ObjectOpenHashMap<>(candidatesBySection);
         this.targetSections = targetSections.clone();
     }
 
@@ -114,7 +146,7 @@ final class MeshBuildSnapshot {
         }
     }
 
-    private BuiltSection buildSection(
+    private @Nullable BuiltSection buildSection(
             List<Candidate> candidates,
             GenerationCoordinator.CancellationToken cancellation
     ) {
@@ -126,6 +158,7 @@ final class MeshBuildSnapshot {
             );
             RandomSource random = RandomSource.create(0L);
             BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
+            float[] smoothColor = new float[3];
             int visited = 0;
             for (Candidate candidate : candidates) {
                 if ((visited++ & 63) == 0) {
@@ -136,10 +169,6 @@ final class MeshBuildSnapshot {
                 int worldY = blockPos.getY();
                 int worldZ = blockPos.getZ();
                 for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
-                    int light = candidate.light(directionIndex);
-                    if (light == 0) {
-                        continue;
-                    }
                     Direction direction = DIRECTIONS[directionIndex];
                     if (!candidate.isFaceVisible(directionIndex)) {
                         continue;
@@ -148,7 +177,10 @@ final class MeshBuildSnapshot {
                     for (BakedQuad quad : candidate.model().getQuads(
                             candidate.state(), direction, random, candidate.modelData(), null
                     )) {
-                        renderQuad(builder, quad, worldX, worldY, worldZ, light);
+                        renderQuad(
+                                builder, quad, worldX, worldY, worldZ,
+                                candidate, smoothColor
+                        );
                     }
                 }
 
@@ -156,7 +188,10 @@ final class MeshBuildSnapshot {
                 for (BakedQuad quad : candidate.model().getQuads(
                         candidate.state(), null, random, candidate.modelData(), null
                 )) {
-                    renderQuad(builder, quad, worldX, worldY, worldZ, candidate.unculledLight());
+                    renderQuad(
+                            builder, quad, worldX, worldY, worldZ,
+                            candidate, smoothColor
+                    );
                 }
             }
 
@@ -180,20 +215,27 @@ final class MeshBuildSnapshot {
             int worldX,
             int worldY,
             int worldZ,
-            int light
+            Candidate candidate,
+            float[] smoothColor
     ) {
         int[] vertices = quad.getVertices();
-        float red = PackedLight.red(light) / 15.0F;
-        float green = PackedLight.green(light) / 15.0F;
-        float blue = PackedLight.blue(light) / 15.0F;
+        int directionIndex = quad.getDirection().get3DDataValue();
+        if (!candidate.faceHasLight(directionIndex)
+                || !LightMaskMeshPrefilter.isBoundaryQuad(vertices, directionIndex)) {
+            return;
+        }
         for (int vertex = 0; vertex < 4; vertex++) {
             int offset = vertex * 8;
+            float x = Float.intBitsToFloat(vertices[offset]);
+            float y = Float.intBitsToFloat(vertices[offset + 1]);
+            float z = Float.intBitsToFloat(vertices[offset + 2]);
+            candidate.smoothColor(directionIndex, x, y, z, smoothColor);
             builder.addVertex(
-                            worldX + Float.intBitsToFloat(vertices[offset]),
-                            worldY + Float.intBitsToFloat(vertices[offset + 1]),
-                            worldZ + Float.intBitsToFloat(vertices[offset + 2])
+                            worldX + x,
+                            worldY + y,
+                            worldZ + z
                     )
-                    .setColor(red, green, blue, 1.0F)
+                    .setColor(smoothColor[0], smoothColor[1], smoothColor[2], 1.0F)
                     .setUv(
                             Float.intBitsToFloat(vertices[offset + 4]),
                             Float.intBitsToFloat(vertices[offset + 5])
@@ -203,16 +245,16 @@ final class MeshBuildSnapshot {
 
     private static void ensureNotCancelled(GenerationCoordinator.CancellationToken cancellation) {
         if (cancellation.isCancelled()) {
-            throw new CancellationException("CPU 网格任务已过期");
+            throw new CancellationException("CPU mesh task is stale");
         }
     }
 
     private static void closeBuilt(Long2ObjectOpenHashMap<BuiltSection> built) {
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (BuiltSection mesh : built.values()) {
             try {
                 mesh.close();
-            } catch (RuntimeException exception) {
+            } catch (RuntimeException | Error exception) {
                 if (failure == null) {
                     failure = exception;
                 } else {
@@ -221,8 +263,11 @@ final class MeshBuildSnapshot {
             }
         }
         built.clear();
-        if (failure != null) {
-            throw failure;
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
         }
     }
 
@@ -237,7 +282,7 @@ final class MeshBuildSnapshot {
 
         Long2ObjectOpenHashMap<BuiltSection> claimSections() {
             if (claimed) {
-                throw new IllegalStateException("CPU 网格结果只能接管一次");
+                throw new IllegalStateException("CPU mesh result can only be claimed once");
             }
             claimed = true;
             return sections;
@@ -273,7 +318,7 @@ final class MeshBuildSnapshot {
 
         void upload(VertexBuffer buffer) {
             if (uploaded) {
-                throw new IllegalStateException("CPU 网格不能重复上传");
+                throw new IllegalStateException("CPU mesh cannot be uploaded more than once");
             }
             // VertexBuffer.upload 接管 MeshData；即使上传抛错，本层也不能再二次关闭它。
             uploaded = true;
@@ -300,7 +345,7 @@ final class MeshBuildSnapshot {
     /** 整代 CPU 原生内存超过预算时，调用方改走有界的逐片构建/上传回退。 */
     static final class MeshBudgetExceededException extends RuntimeException {
         private MeshBudgetExceededException() {
-            super("CPU 网格候选超过 64 MiB，需使用流式精确回退");
+            super("CPU mesh candidate exceeds 64 MiB and requires exact streaming fallback");
         }
     }
 

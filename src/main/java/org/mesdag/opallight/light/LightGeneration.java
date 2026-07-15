@@ -2,8 +2,8 @@ package org.mesdag.opallight.light;
 
 import java.util.Objects;
 import java.util.function.BiConsumer;
-import java.util.function.BiPredicate;
 import java.util.function.Predicate;
+import java.util.function.LongPredicate;
 
 /**
  * 一次可见彩光状态的不可拆分所有权单元。
@@ -56,7 +56,7 @@ final class LightGeneration<T> implements AutoCloseable {
             boolean converged
     ) {
         if (generationId < 0L) {
-            throw new IllegalArgumentException("generation id 不能为负数");
+            throw new IllegalArgumentException("generationId must not be negative");
         }
         this.generationId = generationId;
         this.exactIdentity = Objects.requireNonNull(exactIdentity, "exactIdentity");
@@ -96,29 +96,12 @@ final class LightGeneration<T> implements AutoCloseable {
         return exactIdentity.equals(candidateIdentity) && revisions.equals(candidateRevisions);
     }
 
-    int cpuSectionCount() {
-        requireOpen();
-        return cpuState.sectionCount();
-    }
-
-    long cpuBytes() {
-        requireOpen();
-        return saturatedMultiply(cpuState.sectionCount(), BYTES_PER_SECTION);
-    }
-
-    int gpuMeshCount() {
-        requireOpen();
-        return gpuMeshes.size();
-    }
-
-    long gpuBytes() {
-        requireOpen();
-        return gpuMeshes.gpuBytes();
-    }
-
     long cacheWeightBytes() {
         requireOpen();
-        return saturatedAdd(cpuBytes(), gpuMeshes.gpuBytes());
+        return saturatedAdd(
+                saturatedMultiply(cpuState.sectionCount(), BYTES_PER_SECTION),
+                gpuMeshes.gpuBytes()
+        );
     }
 
     boolean allGpuMeshesMatch(Predicate<? super T> predicate) {
@@ -131,16 +114,9 @@ final class LightGeneration<T> implements AutoCloseable {
         gpuMeshes.forEach(consumer);
     }
 
-    boolean anyGpuMeshMatches(BiPredicate<Long, ? super T> predicate) {
+    boolean anyGpuSectionMatches(LongPredicate predicate) {
         requireOpen();
-        Objects.requireNonNull(predicate, "predicate");
-        final boolean[] matched = {false};
-        gpuMeshes.forEach((sectionKey, mesh) -> {
-            if (!matched[0] && predicate.test(sectionKey, mesh)) {
-                matched[0] = true;
-            }
-        });
-        return matched[0];
+        return gpuMeshes.anyKeyMatches(predicate);
     }
 
     /**
@@ -152,7 +128,7 @@ final class LightGeneration<T> implements AutoCloseable {
     LightGeneration<T> retainForCache() {
         requireOpen();
         if (!converged) {
-            throw new IllegalStateException("未收敛 generation 不能进入缓存");
+            throw new IllegalStateException("An unconverged generation cannot enter the cache");
         }
         return new LightGeneration<>(
                 generationId,
@@ -180,9 +156,13 @@ final class LightGeneration<T> implements AutoCloseable {
         }
     }
 
+    boolean isOpen() {
+        return !closed;
+    }
+
     private void requireOpen() {
         if (closed) {
-            throw new IllegalStateException("generation owner 已经关闭");
+            throw new IllegalStateException("Generation owner is already closed");
         }
     }
 

@@ -1,12 +1,13 @@
 package org.mesdag.opallight.light;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 
 /**
@@ -31,7 +32,7 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
     private final List<LightGeneration<T>> deferredClosures = new ArrayList<>();
     private final Set<LightGeneration<T>> deferredIdentities =
             Collections.newSetFromMap(new IdentityHashMap<>());
-    private LightGeneration<T> active;
+    private @Nullable LightGeneration<T> active;
 
     CompositeGenerationStore(long maxCachedGenerations, long maxCachedBytes) {
         cache = new WeightedLruCache<>(
@@ -55,10 +56,10 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         LightGeneration.RevisionKey revisions =
                 Objects.requireNonNull(generation.revisions(), "revisions");
         if (!generation.converged()) {
-            throw new IllegalStateException("未收敛 generation 不能发布到复合缓存");
+            throw new IllegalStateException("An unconverged generation cannot be published to the composite cache");
         }
         if (active == generation) {
-            throw new IllegalArgumentException("同一个 generation owner 不能重复发布");
+            throw new IllegalArgumentException("The same generation owner cannot be published more than once");
         }
         long weight = generation.cacheWeightBytes();
 
@@ -70,21 +71,21 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
          * 延迟释放可能再次失败，但不能发生在接管新 owner 之前。否则调用方无法区分
          * “store 尚未接管”和“store 已经接管但清理失败”，生产发布路径就只能泄漏或误关二选一。
          */
-        RuntimeException failure = retryDeferredClosures();
+        Throwable failure = retryDeferredClosures();
         try {
             LightGeneration<T> cacheOwner = generation.retainForCache();
             cache.put(new CacheKey(exactIdentity, revisions), cacheOwner, weight);
-        } catch (RuntimeException currentFailure) {
+        } catch (RuntimeException | Error currentFailure) {
             failure = merge(failure, currentFailure);
         }
         if (previousActive != null) {
             try {
                 closeOwnedOrDefer(previousActive);
-            } catch (RuntimeException currentFailure) {
+            } catch (RuntimeException | Error currentFailure) {
                 failure = merge(failure, currentFailure);
             }
         }
-        rethrow(failure);
+        rethrowThrowable(failure);
     }
 
     /**
@@ -93,7 +94,7 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
      * <p>返回 {@code null} 表示必须重建；store 不会暴露内部 cache owner。GPU 失效会先
      * 淘汰该加速项再返回 miss，淘汰释放失败则直接抛出，不能让调用者误以为清理成功。</p>
      */
-    LightGeneration<T> retainExact(
+    @Nullable LightGeneration<T> retainExact(
             Object exactIdentity,
             LightGeneration.RevisionKey revisions,
             Predicate<? super T> gpuValidity
@@ -116,29 +117,8 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         return cached.retainForCache();
     }
 
-    /** 返回 active 的新 owner；不存在 active 时返回 {@code null}。 */
-    LightGeneration<T> retainActive() {
-        return active == null ? null : active.retainForCache();
-    }
-
     long activeGenerationId() {
         return active == null ? -1L : active.generationId();
-    }
-
-    int activeGpuMeshCount() {
-        return active == null ? 0 : active.gpuMeshCount();
-    }
-
-    boolean allActiveGpuMeshesMatch(Predicate<? super T> predicate) {
-        Objects.requireNonNull(predicate, "predicate");
-        return active == null || active.allGpuMeshesMatch(predicate);
-    }
-
-    void forEachActiveGpuMesh(BiConsumer<Long, ? super T> consumer) {
-        Objects.requireNonNull(consumer, "consumer");
-        if (active != null) {
-            active.forEachGpuMesh(consumer);
-        }
     }
 
     /** 仅释放 active owner；同代 cache owner 仍可保留供以后精确命中。 */
@@ -156,14 +136,6 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         cache.removeValuesIf(predicate::test);
     }
 
-    int cachedGenerationCount() {
-        return cache.size();
-    }
-
-    long cachedWeightBytes() {
-        return cache.totalWeight();
-    }
-
     /**
      * 清空缓存与 active；重复调用幂等。
      *
@@ -171,10 +143,10 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
      * 过程中仍会尝试其余 owner，并把后续异常作为 suppressed 附加到首个异常。</p>
      */
     void clear() {
-        RuntimeException failure = retryDeferredClosures();
+        Throwable failure = retryDeferredClosures();
         try {
             cache.clear();
-        } catch (RuntimeException currentFailure) {
+        } catch (RuntimeException | Error currentFailure) {
             failure = merge(failure, currentFailure);
         }
 
@@ -183,11 +155,11 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         if (removedActive != null) {
             try {
                 closeOwnedOrDefer(removedActive);
-            } catch (RuntimeException currentFailure) {
+            } catch (RuntimeException | Error currentFailure) {
                 failure = merge(failure, currentFailure);
             }
         }
-        rethrow(failure);
+        rethrowThrowable(failure);
     }
 
     @Override
@@ -198,7 +170,7 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
     private void closeOwnedOrDefer(LightGeneration<T> generation) {
         try {
             generation.close();
-        } catch (RuntimeException failure) {
+        } catch (RuntimeException | Error failure) {
             if (ownerStillOpen(generation) && deferredIdentities.add(generation)) {
                 deferredClosures.add(generation);
             }
@@ -206,7 +178,7 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         }
     }
 
-    private RuntimeException retryDeferredClosures() {
+    private @Nullable Throwable retryDeferredClosures() {
         if (deferredClosures.isEmpty()) {
             return null;
         }
@@ -214,11 +186,11 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         deferredClosures.clear();
         deferredIdentities.clear();
 
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (LightGeneration<T> generation : retrying) {
             try {
                 closeOwnedOrDefer(generation);
-            } catch (RuntimeException currentFailure) {
+            } catch (RuntimeException | Error currentFailure) {
                 failure = merge(failure, currentFailure);
             }
         }
@@ -226,22 +198,17 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
     }
 
     private static boolean ownerStillOpen(LightGeneration<?> generation) {
-        try {
-            generation.generationId();
-            return true;
-        } catch (IllegalStateException closed) {
-            return false;
-        }
+        return generation.isOpen();
     }
 
     private static void validateIdentity(Object exactIdentity) {
         Objects.requireNonNull(exactIdentity, "exactIdentity");
         if (exactIdentity instanceof CharSequence text && text.toString().isBlank()) {
-            throw new IllegalArgumentException("exact identity 不能为空");
+            throw new IllegalArgumentException("Exact identity must not be empty");
         }
     }
 
-    private static RuntimeException merge(RuntimeException first, RuntimeException next) {
+    private static Throwable merge(@Nullable Throwable first, Throwable next) {
         if (first == null) {
             return next;
         }
@@ -249,9 +216,15 @@ final class CompositeGenerationStore<T> implements AutoCloseable {
         return first;
     }
 
-    private static void rethrow(RuntimeException failure) {
+    private static void rethrowThrowable(@Nullable Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
         if (failure != null) {
-            throw failure;
+            throw new AssertionError("Generation resource handling threw an undeclared checked exception", failure);
         }
     }
 

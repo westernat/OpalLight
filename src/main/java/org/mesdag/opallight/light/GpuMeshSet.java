@@ -2,12 +2,14 @@ package org.mesdag.opallight.light;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.LongPredicate;
 import java.util.function.Predicate;
 
 /**
@@ -36,7 +38,7 @@ final class GpuMeshSet<T> {
             Runnable threadAssertion
     ) {
         if (gpuBytes < 0L) {
-            throw new IllegalArgumentException("GPU 字节数不能为负数");
+            throw new IllegalArgumentException("GPU byte count must not be negative");
         }
         Objects.requireNonNull(resources, "resources");
         this.disposer = Objects.requireNonNull(disposer, "disposer");
@@ -59,7 +61,7 @@ final class GpuMeshSet<T> {
     Lease acquire() {
         assertThread();
         if (released) {
-            throw new IllegalStateException("GPU 网格集合已经释放");
+            throw new IllegalStateException("GPU mesh set has already been released");
         }
         // 先分配 owner，再增加计数；即使极端 OOM，也不会留下永远无法释放的幽灵租约。
         Lease lease = new Lease();
@@ -77,7 +79,7 @@ final class GpuMeshSet<T> {
             return;
         }
         if (leaseCount != 0) {
-            throw new IllegalStateException("仍有 GPU 网格租约，不能按未接管资源释放");
+            throw new IllegalStateException("Cannot release unowned resources while GPU mesh leases are still active");
         }
         released = true;
         disposeResources();
@@ -92,14 +94,14 @@ final class GpuMeshSet<T> {
     }
 
     private void disposeResources() {
-        List<T> removed = new ArrayList<>(resources.values());
-        resources.clear();
-
-        RuntimeException failure = null;
-        for (T resource : removed) {
+        Throwable failure = null;
+        Iterator<T> iterator = resources.values().iterator();
+        while (iterator.hasNext()) {
+            T resource = iterator.next();
+            iterator.remove();
             try {
                 disposer.accept(resource);
-            } catch (RuntimeException currentFailure) {
+            } catch (RuntimeException | Error currentFailure) {
                 if (failure == null) {
                     failure = currentFailure;
                 } else {
@@ -107,8 +109,11 @@ final class GpuMeshSet<T> {
                 }
             }
         }
-        if (failure != null) {
-            throw failure;
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
         }
     }
 
@@ -123,16 +128,6 @@ final class GpuMeshSet<T> {
         Lease retain() {
             requireOpen();
             return GpuMeshSet.this.acquire();
-        }
-
-        T get(long sectionKey) {
-            requireOpen();
-            return resources.get(sectionKey);
-        }
-
-        int size() {
-            requireOpen();
-            return resources.size();
         }
 
         long gpuBytes() {
@@ -150,6 +145,17 @@ final class GpuMeshSet<T> {
             requireOpen();
             Objects.requireNonNull(consumer, "consumer");
             resources.forEach(consumer);
+        }
+
+        boolean anyKeyMatches(LongPredicate predicate) {
+            requireOpen();
+            Objects.requireNonNull(predicate, "predicate");
+            for (long sectionKey : resources.keySet()) {
+                if (predicate.test(sectionKey)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         @Override
@@ -175,7 +181,7 @@ final class GpuMeshSet<T> {
         private void requireOpen() {
             assertThread();
             if (closed) {
-                throw new IllegalStateException("GPU 网格租约已经关闭");
+                throw new IllegalStateException("GPU mesh lease is already closed");
             }
         }
     }

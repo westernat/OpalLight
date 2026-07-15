@@ -25,7 +25,7 @@ final class RetainedGpuResource<T> {
             Runnable threadAssertion
     ) {
         if (bytes < 0L) {
-            throw new IllegalArgumentException("GPU 字节数不能为负数");
+            throw new IllegalArgumentException("GPU byte count must not be negative");
         }
         this.value = Objects.requireNonNull(value, "value");
         this.bytes = bytes;
@@ -48,7 +48,7 @@ final class RetainedGpuResource<T> {
     private Lease acquire() {
         threadAssertion.run();
         if (released) {
-            throw new IllegalStateException("GPU 资源已经释放");
+            throw new IllegalStateException("GPU resource has already been released");
         }
         owners++;
         return new Lease();
@@ -90,7 +90,7 @@ final class RetainedGpuResource<T> {
         private void requireOpen() {
             threadAssertion.run();
             if (closed || released) {
-                throw new IllegalStateException("GPU 资源租约已经关闭");
+                throw new IllegalStateException("GPU resource lease is already closed");
             }
         }
     }

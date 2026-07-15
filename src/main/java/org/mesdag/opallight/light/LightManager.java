@@ -1,7 +1,8 @@
 package org.mesdag.opallight.light;
 
-import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -9,10 +10,11 @@ import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.RenderStateShard;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.Level;
@@ -29,8 +31,8 @@ import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
+import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
-import org.lwjgl.opengl.GL11;
 import org.mesdag.opallight.OpalLight;
 
 import java.io.IOException;
@@ -41,7 +43,39 @@ import java.util.Optional;
 
 @EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightManager {
-    static ShaderInstance lightMaskShader;
+    static @Nullable ShaderInstance lightMaskShader;
+    private static final RenderStateShard.LayeringStateShard LIGHT_MASK_LAYERING =
+            new RenderStateShard.LayeringStateShard(
+                    "opallight_polygon_offset",
+                    () -> {
+                        RenderSystem.polygonOffset(-1.0F, -1.0F);
+                        RenderSystem.enablePolygonOffset();
+                    },
+                    () -> {
+                        RenderSystem.polygonOffset(0.0F, 0.0F);
+                        RenderSystem.disablePolygonOffset();
+                    }
+            );
+    /**
+     * 通过 Minecraft 的渲染状态抽象描述遮罩，而不是直接调用 OpenGL。
+     * VulkanMod 会接管 RenderType/RenderSystem；直接操作 GL 状态会绕过其后端状态机。
+     */
+    private static final RenderType LIGHT_MASK = RenderType.create(
+            "opallight_light_mask",
+            DefaultVertexFormat.POSITION_TEX_COLOR,
+            VertexFormat.Mode.QUADS,
+            256,
+            false,
+            true,
+            RenderType.CompositeState.builder()
+                    .setShaderState(new RenderStateShard.ShaderStateShard(() -> lightMaskShader))
+                    .setTextureState(RenderType.BLOCK_SHEET)
+                    .setTransparencyState(RenderStateShard.ADDITIVE_TRANSPARENCY)
+                    .setDepthTestState(RenderType.LEQUAL_DEPTH_TEST)
+                    .setWriteMaskState(RenderType.COLOR_WRITE)
+                    .setLayeringState(LIGHT_MASK_LAYERING)
+                    .createCompositeState(false)
+    );
     private static final Direction[] DIRECTIONS = Direction.values();
     // 区块流会在极短时间内分批到达；按真实时间合并，避免高帧率下过早提交半批数据。
     private static final long CHUNK_LIFECYCLE_QUIET_NANOS = 50_000_000L;
@@ -69,11 +103,7 @@ public final class LightManager {
                             task.generationRevisions,
                             task.identityNanos,
                             task.worldSnapshot.captureNanos()
-                    ),
-                    ignored -> {
-                    },
-                    ignored -> {
-                    }
+                    )
             );
     private static final LongOpenHashSet LOADED_CHUNKS = new LongOpenHashSet();
     private static final LongOpenHashSet PENDING_CHUNK_SCANS = new LongOpenHashSet();
@@ -98,8 +128,8 @@ public final class LightManager {
     private static final long BULK_STATE_CACHE_BYTES = 128L * 1024L * 1024L;
     private static final WeightedLruCache<BulkStateIdentity, CachedBulkState> BULK_STATE_SNAPSHOTS =
             new WeightedLruCache<>(64L, BULK_STATE_CACHE_BYTES);
-    private static ClientLevel activeLevel;
-    private static ClientLevelAccess access;
+    private static @Nullable ClientLevel activeLevel;
+    private static @Nullable ClientLevelAccess access;
     private static volatile boolean fullRebuildRequested = true;
     /*
      * ModelData 可以在 BlockState 不变时改变模型。该标记让下一帧废弃旧 VBO 状态令牌，
@@ -117,9 +147,9 @@ public final class LightManager {
     private static long visualRevision;
     private static long levelSessionRevision;
     private static long chunkLifecycleRevision;
-    private static RgbGenerationKey submittedAsyncRgbKey;
-    private static RgbGenerationKey failedAsyncRgbKey;
-    private static SlicedRgbFallback slicedRgbFallback;
+    private static @Nullable RgbGenerationKey submittedAsyncRgbKey;
+    private static @Nullable RgbGenerationKey failedAsyncRgbKey;
+    private static @Nullable SlicedRgbFallback slicedRgbFallback;
     private static int pendingSnapshotHits;
     private static int pendingSnapshotMisses;
     private static long pendingSnapshotCaptureNanos;
@@ -127,11 +157,13 @@ public final class LightManager {
     private LightManager() {
     }
 
+    @SuppressWarnings("deprecation")
     @SubscribeEvent
     public static void registerShaders(RegisterShadersEvent event) throws IOException {
         event.registerShader(new ShaderInstance(
                 event.getResourceProvider(),
-                ResourceLocation.fromNamespaceAndPath("opallight", "light_mask"),
+                // VulkanMod 仍通过旧的字符串资源名接管 shader；ResourceLocation 重载会绕开它。
+                "opallight:light_mask",
                 DefaultVertexFormat.POSITION_TEX_COLOR
         ), shader -> lightMaskShader = shader);
     }
@@ -337,32 +369,30 @@ public final class LightManager {
         return state.isAir() || emission != 0;
     }
 
-    public static void render(Matrix4f viewMatrix, Camera camera) {
+    /**
+     * 由 GameRenderer 的兼容注入点绘制彩光遮罩。
+     *
+     * <p>这里不能改用普通的 level-stage 订阅替代：Iris、VulkanMod 等替代渲染器会重排
+     * 事件派发与矩阵状态，而注入点拿到的是它们完成世界绘制后仍然有效的实际视图矩阵。</p>
+     */
+    public static void render(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera) {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) {
             return;
         }
         ensureLevel(level);
         flush(level);
-        GlStateManager._enableDepthTest();
-        GlStateManager._depthFunc(GL11.GL_LEQUAL);
-        GlStateManager._depthMask(false);
-        GlStateManager._polygonOffset(-1.0F, -1.0F);
-        GlStateManager._enablePolygonOffset();
-        GlStateManager._enableBlend();
-        GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
+        LIGHT_MASK.setupRenderState();
         try {
-            LightMaskMeshCache.draw(viewMatrix, camera, level, ENGINE);
-        } finally {
-            GlStateManager._blendFuncSeparate(
-                    GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO
+            LightMaskMeshCache.draw(
+                    viewMatrix,
+                    projectionMatrix,
+                    camera,
+                    level,
+                    ENGINE
             );
-            GlStateManager._disableBlend();
-            GlStateManager._disablePolygonOffset();
-            GlStateManager._polygonOffset(0.0F, 0.0F);
-            GlStateManager._depthMask(true);
-            GlStateManager._depthFunc(GL11.GL_LEQUAL);
-            GlStateManager._enableDepthTest();
+        } finally {
+            LIGHT_MASK.clearRenderState();
         }
     }
 
@@ -371,7 +401,7 @@ public final class LightManager {
             failedAsyncRgbKey = submittedAsyncRgbKey;
             submittedAsyncRgbKey = null;
             OpalLight.LOGGER.error(
-                    "RGB worker candidate 构建失败；保持旧 generation，等待下一次内容或生命周期 revision",
+                    "RGB worker candidate build failed; retaining the active generation until the next revision",
                     failure
             );
         });
@@ -676,7 +706,8 @@ public final class LightManager {
                                 asyncDeferred = true;
                             }
                             OpalLight.LOGGER.warn(
-                                    "RGB snapshot 超过 {} sections 或包含动态方块实体遮挡，已回退精确分帧传播；光源与结果未截断",
+                                    "RGB snapshot exceeded {} sections or contains dynamic block-entity occlusion; "
+                                            + "using exact sliced propagation without truncation",
                                     MAX_ASYNC_SNAPSHOT_SECTIONS
                             );
                         }
@@ -791,7 +822,7 @@ public final class LightManager {
         }
     }
 
-    private static void resetLevel(ClientLevel level) {
+    private static void resetLevel(@Nullable ClientLevel level) {
         ENGINE.clear();
         SOURCE_REGISTRY.clear();
         LOADED_CHUNKS.clear();
@@ -830,7 +861,7 @@ public final class LightManager {
     /** 只允许网格发布器在同一 generation 的 VBO 已经 active 后采用对应 CPU 快照。 */
     static void activatePublishedCpuState(RgbLightEngine.ChunkSnapshot snapshot, long generationId) {
         if (snapshot == null) {
-            throw new IllegalStateException("批量 generation 缺少 CPU 光场快照: " + generationId);
+            throw new IllegalStateException("Bulk generation is missing its CPU light-field snapshot: " + generationId);
         }
         ENGINE.activateAllWithoutMeshInvalidation(snapshot);
     }
@@ -1022,24 +1053,20 @@ public final class LightManager {
      */
     private static BulkStateIdentity bulkStateIdentity() {
         SourceRegistry.FrozenIdentity sources = SOURCE_REGISTRY.freezeIdentity();
-        long[] sourcePositions = new long[sources.size()];
-        for (int index = 0; index < sourcePositions.length; index++) {
-            sourcePositions[index] = sources.positionAt(index);
-        }
+        long[] sourcePositions = sources.positionsView();
+        short[] sourceColors = sources.emissionsView();
         LongOpenHashSet lightSections = new LongOpenHashSet();
         ENGINE.collectLightSectionKeys(lightSections);
         long[] relevantLoadedChunks = BulkStateDependencies.relevantLoadedChunks(
-                LOADED_CHUNKS, lightSections, sourcePositions
+                LOADED_CHUNKS, lightSections, sources.chunkKeysView()
         );
         long[] relevantChunkFingerprints = BulkStateDependencies.relevantChunkFingerprints(
                 relevantLoadedChunks, LOADED_CHUNK_FINGERPRINTS
         );
-        short[] sourceColors = new short[sourcePositions.length];
         long logFingerprint = fingerprintMix(0xBB67_AE85_84CA_A73BL ^ propagationRevision);
         for (int index = 0; index < sourcePositions.length; index++) {
             long position = sourcePositions[index];
-            int color = sources.emissionAt(index);
-            sourceColors[index] = (short) color;
+            int color = Short.toUnsignedInt(sourceColors[index]);
             logFingerprint = fingerprintMix(logFingerprint ^ position ^ Long.rotateLeft(color, 19));
         }
         for (int index = 0; index < relevantLoadedChunks.length; index++) {
@@ -1135,8 +1162,7 @@ public final class LightManager {
     }
 
     private static boolean hasAsyncRgbWork() {
-        GenerationCoordinator.State state = RGB_COORDINATOR.state();
-        return state.running() || state.pendingTasks() != 0 || state.completedTasks() != 0;
+        return RGB_COORDINATOR.hasWork();
     }
 
     /**

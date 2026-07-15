@@ -1,5 +1,7 @@
 package org.mesdag.opallight.light;
 
+import org.jetbrains.annotations.Nullable;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -22,31 +24,30 @@ final class WeightedLruCache<K, V> {
     private final Map<K, Entry<V>> entries = new LinkedHashMap<>(16, 0.75F, true);
     private final long maxEntries;
     private final long maxWeight;
-    private final Consumer<? super V> disposer;
+    private final @Nullable Consumer<? super V> disposer;
     private long totalWeight;
 
     WeightedLruCache(long maxEntries, long maxWeight) {
-        this(maxEntries, maxWeight, ignored -> {
-        });
+        this(maxEntries, maxWeight, null);
     }
 
-    WeightedLruCache(long maxEntries, long maxWeight, Consumer<? super V> disposer) {
+    WeightedLruCache(long maxEntries, long maxWeight, @Nullable Consumer<? super V> disposer) {
         if (maxEntries <= 0L || maxWeight <= 0L) {
-            throw new IllegalArgumentException("缓存预算必须为正数");
+            throw new IllegalArgumentException("Cache budget must be positive");
         }
         this.maxEntries = maxEntries;
         this.maxWeight = maxWeight;
-        this.disposer = Objects.requireNonNull(disposer, "disposer");
+        this.disposer = disposer;
     }
 
-    V get(K key) {
+    @Nullable V get(K key) {
         Entry<V> entry = entries.get(key);
         return entry == null ? null : entry.value;
     }
 
     void put(K key, V value, long weight) {
         if (weight < 0L) {
-            throw new IllegalArgumentException("缓存权重不能为负数");
+            throw new IllegalArgumentException("Cache weight must not be negative");
         }
 
         Entry<V> previous = entries.remove(key);
@@ -57,7 +58,7 @@ final class WeightedLruCache<K, V> {
         Entry<V> added = new Entry<>(value, weight);
         entries.put(key, added);
 
-        RuntimeException failure = null;
+        Throwable failure = null;
         if (previous != null && previous.value != value) {
             failure = dispose(previous.value, failure);
         }
@@ -88,27 +89,26 @@ final class WeightedLruCache<K, V> {
         rethrow(failure);
     }
 
-    V remove(K key) {
+    void remove(K key) {
         Entry<V> removed = entries.remove(key);
         if (removed == null) {
-            return null;
+            return;
         }
         totalWeight -= removed.weight;
-        RuntimeException failure = dispose(removed.value, null);
+        Throwable failure = dispose(removed.value, null);
         rethrow(failure);
-        return removed.value;
     }
 
     void removeValuesIf(Predicate<V> predicate) {
         Objects.requireNonNull(predicate, "predicate");
-        RuntimeException failure = null;
+        Throwable failure = null;
         var iterator = entries.entrySet().iterator();
         while (iterator.hasNext()) {
             Entry<V> entry = iterator.next().getValue();
             final boolean remove;
             try {
                 remove = predicate.test(entry.value);
-            } catch (RuntimeException predicateFailure) {
+            } catch (RuntimeException | Error predicateFailure) {
                 if (failure != null) {
                     predicateFailure.addSuppressed(failure);
                 }
@@ -129,7 +129,7 @@ final class WeightedLruCache<K, V> {
         entries.clear();
         totalWeight = 0L;
 
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Entry<V> entry : removedEntries) {
             failure = dispose(entry.value, failure);
         }
@@ -148,10 +148,14 @@ final class WeightedLruCache<K, V> {
      * LinkedHashMap 使用访问顺序，因此迭代器的第一个元素就是最久未使用的加速项。
      * 新条目的权重暂不计入 totalWeight，先通过差值比较淘汰旧项，从而避免 long 加法溢出。
      */
-    private RuntimeException dispose(V value, RuntimeException previousFailure) {
+    private @Nullable Throwable dispose(V value, @Nullable Throwable previousFailure) {
+        Consumer<? super V> currentDisposer = disposer;
+        if (currentDisposer == null) {
+            return previousFailure;
+        }
         try {
-            disposer.accept(value);
-        } catch (RuntimeException currentFailure) {
+            currentDisposer.accept(value);
+        } catch (RuntimeException | Error currentFailure) {
             if (previousFailure == null) {
                 return currentFailure;
             }
@@ -160,9 +164,15 @@ final class WeightedLruCache<K, V> {
         return previousFailure;
     }
 
-    private static void rethrow(RuntimeException failure) {
+    private static void rethrow(@Nullable Throwable failure) {
+        if (failure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
         if (failure != null) {
-            throw failure;
+            throw new AssertionError("Cache disposal threw an undeclared checked exception", failure);
         }
     }
 

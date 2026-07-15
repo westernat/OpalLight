@@ -19,7 +19,7 @@ final class RenderUploadBudget {
 
     RenderUploadBudget(long budgetNanos, LongSupplier clock) {
         if (budgetNanos <= 0L) {
-            throw new IllegalArgumentException("budgetNanos 必须大于 0");
+            throw new IllegalArgumentException("budgetNanos must be greater than zero");
         }
         this.budgetNanos = budgetNanos;
         this.clock = Objects.requireNonNull(clock, "clock");
