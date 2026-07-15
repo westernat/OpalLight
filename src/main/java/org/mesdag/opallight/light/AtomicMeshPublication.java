@@ -15,7 +15,7 @@ import java.util.function.Consumer;
 ///
 /// 本类型不理解 OpenGL，但所有读取、写入、提交和释放都会执行调用方注入的线程断言。
 /// 生产环境绑定 Render thread，单元测试用可控断言验证越线程失败不会遗失资源所有权。
-public final class AtomicMeshPublication<T> implements AutoCloseable {
+final class AtomicMeshPublication<T> implements AutoCloseable {
     private final Consumer<? super T> disposer;
     private final Runnable threadAssertion;
     private Long2ObjectOpenHashMap<Entry<T>> active = new Long2ObjectOpenHashMap<>();
@@ -24,39 +24,39 @@ public final class AtomicMeshPublication<T> implements AutoCloseable {
     private @Nullable Stage staging;
     private boolean closed;
 
-    public AtomicMeshPublication(Consumer<? super T> disposer, Runnable threadAssertion) {
+    AtomicMeshPublication(Consumer<? super T> disposer, Runnable threadAssertion) {
         this.disposer = Objects.requireNonNull(disposer, "disposer");
         this.threadAssertion = Objects.requireNonNull(threadAssertion, "threadAssertion");
     }
 
-    public @Nullable T active(long sectionKey) {
+    @Nullable T active(long sectionKey) {
         requireOpen();
         Entry<T> entry = active.get(sectionKey);
         return entry == null ? null : entry.resource;
     }
 
-    public int activeSize() {
+    int activeSize() {
         requireOpen();
         return active.size();
     }
 
-    public long activeGenerationId() {
+    long activeGenerationId() {
         requireOpen();
         return activeGenerationId;
     }
 
-    public void forEachActive(BiConsumer<Long, ? super T> consumer) {
+    void forEachActive(BiConsumer<Long, ? super T> consumer) {
         requireOpen();
         Objects.requireNonNull(consumer, "consumer");
         active.forEach((key, entry) -> consumer.accept(key, entry.resource));
     }
 
-    public long[] activeSectionKeys() {
+    long[] activeSectionKeys() {
         requireOpen();
         return active.keySet().toLongArray();
     }
 
-    public @Nullable T removeActiveForLegacy(long sectionKey) {
+    @Nullable T removeActiveForLegacy(long sectionKey) {
         requireOpen();
         Entry<T> removed = active.remove(sectionKey);
         if (removed == null) {
@@ -66,7 +66,7 @@ public final class AtomicMeshPublication<T> implements AutoCloseable {
         return removed.resource;
     }
 
-    public Stage begin(long generationId) {
+    Stage begin(long generationId) {
         requireOpen();
         if (generationId < 0L) {
             throw new IllegalArgumentException("generationId must not be negative");
@@ -79,7 +79,7 @@ public final class AtomicMeshPublication<T> implements AutoCloseable {
     }
 
     /// 原子采用一个已缓存的完整状态，并把旧 active 所有权返回给调用方。
-    public OwnedState<T> adopt(OwnedState<T> state) {
+    OwnedState<T> adopt(OwnedState<T> state) {
         requireOpen();
         Objects.requireNonNull(state, "state");
         if (staging != null) {
@@ -94,7 +94,7 @@ public final class AtomicMeshPublication<T> implements AutoCloseable {
     }
 
     /// 取消 staging、释放 active，但保留 publication 对象供世界切换后的下一代复用。
-    public void reset() {
+    void reset() {
         requireOpen();
         Throwable failure = null;
         if (staging != null) {
@@ -228,7 +228,7 @@ public final class AtomicMeshPublication<T> implements AutoCloseable {
     }
 
     /// 一次不可见构建；close 表示取消，commit 表示把完整 map 一次交换为 active。
-    public final class Stage implements AutoCloseable {
+    final class Stage implements AutoCloseable {
         private final long generationId;
         private Long2ObjectOpenHashMap<Entry<T>> resources = new Long2ObjectOpenHashMap<>();
         private long bytes;

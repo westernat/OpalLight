@@ -287,11 +287,8 @@ public final class LightMaskMeshCache {
         if (restored != null) {
             long restoredGenerationId = restored.generationId();
             AtomicMeshPublication.OwnedState<RetainedGpuResource<VertexBuffer>.Lease> previous;
-            try (AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease>.Stage stage =
-                         MESHES.begin(restoredGenerationId)) {
-                restored.forEachGpuMesh((sectionKey, lease) ->
-                        stage.put(sectionKey, lease.retain(), lease.bytes())
-                );
+            try (AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease>.Stage stage = MESHES.begin(restoredGenerationId)) {
+                restored.forEachGpuMesh((sectionKey, lease) -> stage.put(sectionKey, lease.retain(), lease.bytes()));
                 previous = stage.commit();
             }
             requestedGeneration = null;
@@ -421,30 +418,27 @@ public final class LightMaskMeshCache {
         }
 
         if (isGenerationActive(generationId)) {
-            try {
-                LightManager.activatePublishedCpuState(generation.cpuState(), generationId);
-                currentStateToken = stateToken;
-                requestedStateCacheHit = false;
-                requestedCpuState = null;
-                requestedRevisions = null;
-                if (cacheHit) {
-                    DIRTY_SECTIONS.clear();
-                }
-            } catch (RuntimeException | Error activationFailure) {
-                failure = mergeFailures(failure, activationFailure);
-            } finally {
+            try (previous) {
                 try {
-                    previous.close();
-                } catch (RuntimeException | Error closeFailure) {
-                    failure = mergeFailures(failure, closeFailure);
+                    LightManager.activatePublishedCpuState(generation.cpuState(), generationId);
+                    currentStateToken = stateToken;
+                    requestedStateCacheHit = false;
+                    requestedCpuState = null;
+                    requestedRevisions = null;
+                    if (cacheHit) {
+                        DIRTY_SECTIONS.clear();
+                    }
+                } catch (RuntimeException | Error activationFailure) {
+                    failure = mergeFailures(failure, activationFailure);
                 }
+            } catch (RuntimeException | Error closeFailure) {
+                failure = mergeFailures(failure, closeFailure);
             }
             return failure;
         }
 
         try {
-            AtomicMeshPublication.OwnedState<RetainedGpuResource<VertexBuffer>.Lease> failedNew =
-                    MESHES.adopt(previous);
+            AtomicMeshPublication.OwnedState<RetainedGpuResource<VertexBuffer>.Lease> failedNew = MESHES.adopt(previous);
             failedNew.close();
         } catch (RuntimeException | Error rollbackFailure) {
             failure = mergeFailures(failure, rollbackFailure);
@@ -777,18 +771,15 @@ public final class LightMaskMeshCache {
             }
             RenderUploadBudget.Slice slice = switch (cpuPhase) {
                 case CAPTURE_SECTIONS -> RENDER_MESH_BUDGET.run(
-                        () -> cpuPhase == CpuPhase.CAPTURE_SECTIONS
-                                && captureSectionIndex < captureSections.length,
+                        () -> cpuPhase == CpuPhase.CAPTURE_SECTIONS && captureSectionIndex < captureSections.length,
                         () -> captureNextSection(level)
                 );
                 case CAPTURE_CANDIDATES -> RENDER_MESH_BUDGET.run(
-                        () -> cpuPhase == CpuPhase.CAPTURE_CANDIDATES
-                                && candidateSectionIndex < sections.length,
+                        () -> cpuPhase == CpuPhase.CAPTURE_CANDIDATES && candidateSectionIndex < sections.length,
                         () -> captureNextCandidateBatch(level)
                 );
                 case FALLBACK -> RENDER_MESH_BUDGET.run(
-                        () -> fallbackSectionIndex < sections.length
-                                && pendingCpuBytes < STREAMING_CPU_MESH_BYTES,
+                        () -> fallbackSectionIndex < sections.length && pendingCpuBytes < STREAMING_CPU_MESH_BYTES,
                         () -> buildNextFallbackSection(level, engine)
                 );
                 case WAITING_WORKER, COMPLETE -> throw new IllegalStateException("Invalid CPU mesh phase state");
