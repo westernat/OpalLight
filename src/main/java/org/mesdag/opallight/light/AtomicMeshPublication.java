@@ -179,7 +179,7 @@ final class AtomicMeshPublication<T> implements AutoCloseable {
         private final Consumer<? super T> disposer;
         private final Runnable threadAssertion;
         private Long2ObjectOpenHashMap<Entry<T>> resources;
-        private long generationId;
+        private final long generationId;
         private long bytes;
         private boolean closed;
 

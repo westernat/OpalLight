@@ -1,12 +1,7 @@
 package org.mesdag.opallight.light;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.ByteBufferBuilder;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.MeshData;
-import com.mojang.blaze3d.vertex.VertexBuffer;
-import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.*;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -33,8 +28,8 @@ import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.model.data.ModelData;
-import org.joml.Matrix4f;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Matrix4f;
 import org.mesdag.opallight.OpalLight;
 
 import java.util.ArrayList;
@@ -45,39 +40,41 @@ import java.util.function.LongToIntFunction;
 
 import static org.mesdag.opallight.light.LightManager.lightMaskShader;
 
-/** 在渲染线程中维护可独立替换的彩色光照网格缓存。 */
+/**
+ * 在渲染线程中维护可独立替换的彩色光照网格缓存。
+ */
 public final class LightMaskMeshCache {
     private static final Direction[] DIRECTIONS = Direction.values();
-    /** 全局发布器与客户端生命周期一致，并由失效入口显式重置，不能使用局部 try-with-resources。 */
-    private static final AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease> MESHES =
-        new AtomicMeshPublication<>(
-            lease -> lease.close(),
+    /**
+     * 全局发布器与客户端生命周期一致，并由失效入口显式重置，不能使用局部 try-with-resources。
+     */
+    private static final AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease> MESHES = new AtomicMeshPublication<>(
+            RetainedGpuResource.Lease::close,
             RenderSystem::assertOnRenderThread
-        );
+    );
     private static final LongOpenHashSet DIRTY_SECTIONS = new LongOpenHashSet();
-    private static final RenderUploadBudget RENDER_MESH_BUDGET =
-            // 留出调度与循环开销，实测单片才能稳定落在对外 4 ms 门槛内。
-            new RenderUploadBudget(3_500_000L, System::nanoTime);
+    // 留出调度与循环开销，实测单片才能稳定落在对外 4 ms 门槛内。
+    private static final RenderUploadBudget RENDER_MESH_BUDGET = new RenderUploadBudget(3_500_000L, System::nanoTime);
     /**
      * 候选捕获每处理这一批体素才重新读取一次时间预算。逐体素计时会在大范围重建时产生数千次
      * {@code nanoTime} 与循环调度开销。平滑光照会为候选额外读取 3×3×3 邻域，因此把
      * 检查点收紧到 32 个体素，避免单片在复杂建筑中越过既定的渲染线程预算。
      */
-    private static final GenerationCoordinator<MeshRequestKey, MeshBuildSnapshot, MeshBuildSnapshot.Result>
-            MESH_COORDINATOR = new GenerationCoordinator<>(
-                    "OpalLight-MeshWorker",
-                    MeshBuildSnapshot::build,
-                    MeshBuildSnapshot.Result::close
-            );
+    private static final GenerationCoordinator<MeshRequestKey, MeshBuildSnapshot, MeshBuildSnapshot.Result> MESH_COORDINATOR = new GenerationCoordinator<>(
+            "OpalLight-MeshWorker",
+            MeshBuildSnapshot::build,
+            MeshBuildSnapshot.Result::close
+    );
     private static final long GENERATION_CACHE_BYTES = 128L * 1024L * 1024L;
     private static final long STREAMING_CPU_MESH_BYTES = 16L * 1024L * 1024L;
     private static final int MAX_ASYNC_MESH_SECTIONS = 256;
     private static final long MAX_CAPTURED_CANDIDATE_BYTES = 64L * 1024L * 1024L;
-    /** 面角光照数组扩展为 24 项后，按对象、数组、引用和列表槽位保守估算。 */
+    /**
+     * 面角光照数组扩展为 24 项后，按对象、数组、引用和列表槽位保守估算。
+     */
     private static final long ESTIMATED_CANDIDATE_BYTES = 320L;
     private static final int CANDIDATE_VOXELS_PER_BUDGET_CHECK = 32;
-    private static final CompositeGenerationStore<RetainedGpuResource<VertexBuffer>.Lease> GENERATIONS =
-            new CompositeGenerationStore<>(64L, GENERATION_CACHE_BYTES);
+    private static final CompositeGenerationStore<RetainedGpuResource<VertexBuffer>.Lease> GENERATIONS = new CompositeGenerationStore<>(64L, GENERATION_CACHE_BYTES);
     private static final Reference2ObjectOpenHashMap<BlockState, BakedModel> MODEL_CACHE = new Reference2ObjectOpenHashMap<>();
     private static final Matrix4f MODEL_VIEW = new Matrix4f();
     private static @Nullable Object currentStateToken;
@@ -90,7 +87,9 @@ public final class LightMaskMeshCache {
     private static long meshRevision;
     private static @Nullable PendingMeshRebuild pendingMeshRebuild;
 
-    /** worker 结果必须与创建它的全部请求身份一致，generation id 防止同 revision 重用旧结果。 */
+    /**
+     * worker 结果必须与创建它的全部请求身份一致，generation id 防止同 revision 重用旧结果。
+     */
     private record MeshRequestKey(
             long meshRevision,
             @Nullable Object stateToken,
@@ -553,57 +552,57 @@ public final class LightMaskMeshCache {
             for (int localY = 0; localY < 16; localY++) {
                 for (int localZ = 0; localZ < 16; localZ++) {
                     for (int localX = 0; localX < 16; localX++) {
-                    BlockState state = section.getBlockState(localX, localY, localZ);
-                    if (state.isAir()) {
-                        continue;
-                    }
-                    int worldX = originX + localX;
-                    int worldY = originY + localY;
-                    int worldZ = originZ + localZ;
-                    blockPos.set(worldX, worldY, worldZ);
-                    if (LightManager.packedEmission(level, blockPos, state) != 0) {
-                        continue;
-                    }
-
-                    long packedPos = PackedPosition.pack(worldX, worldY, worldZ);
-                    LightMaskMeshPrefilter.sampleFaceCorners(lightLookup, packedPos, faceCornerLights);
-                    if (!LightMaskMeshPrefilter.anyFaceHasLight(faceCornerLights)) {
-                        // 外壳 26 个体素全部无彩光时不可能生成遮罩顶点，禁止触碰模型和 ModelData。
-                        continue;
-                    }
-                    BakedModel model = MODEL_CACHE.computeIfAbsent(state, shaper::getBlockModel);
-                    /*
-                     * level 只提供方块实体的原始 ModelData；BakedModel 还可以根据世界、位置和
-                     * BlockState 派生最终数据。必须与原版 SectionCompiler 保持相同的两步调用，
-                     * 否则连接模型或动态材质在彩光遮罩中会使用错误几何，并留下残影。
-                     */
-                    ModelData modelData = level.getModelData(blockPos);
-                    modelData = model.getModelData(level, blockPos, state, modelData);
-                    long seed = state.getSeed(blockPos);
-
-                    for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
-                        Direction direction = DIRECTIONS[directionIndex];
-                        long neighborPacked = PackedPosition.offset(packedPos, directionIndex);
-                        neighborPos.set(neighborPacked);
-                        if (!Block.shouldRenderFace(state, level, blockPos, direction, neighborPos)) {
+                        BlockState state = section.getBlockState(localX, localY, localZ);
+                        if (state.isAir()) {
                             continue;
                         }
+                        int worldX = originX + localX;
+                        int worldY = originY + localY;
+                        int worldZ = originZ + localZ;
+                        blockPos.set(worldX, worldY, worldZ);
+                        if (LightManager.packedEmission(level, blockPos, state) != 0) {
+                            continue;
+                        }
+
+                        long packedPos = PackedPosition.pack(worldX, worldY, worldZ);
+                        LightMaskMeshPrefilter.sampleFaceCorners(lightLookup, packedPos, faceCornerLights);
+                        if (!LightMaskMeshPrefilter.anyFaceHasLight(faceCornerLights)) {
+                            // 外壳 26 个体素全部无彩光时不可能生成遮罩顶点，禁止触碰模型和 ModelData。
+                            continue;
+                        }
+                        BakedModel model = MODEL_CACHE.computeIfAbsent(state, shaper::getBlockModel);
+                        /*
+                         * level 只提供方块实体的原始 ModelData；BakedModel 还可以根据世界、位置和
+                         * BlockState 派生最终数据。必须与原版 SectionCompiler 保持相同的两步调用，
+                         * 否则连接模型或动态材质在彩光遮罩中会使用错误几何，并留下残影。
+                         */
+                        ModelData modelData = level.getModelData(blockPos);
+                        modelData = model.getModelData(level, blockPos, state, modelData);
+                        long seed = state.getSeed(blockPos);
+
+                        for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
+                            Direction direction = DIRECTIONS[directionIndex];
+                            long neighborPacked = PackedPosition.offset(packedPos, directionIndex);
+                            neighborPos.set(neighborPacked);
+                            if (!Block.shouldRenderFace(state, level, blockPos, direction, neighborPos)) {
+                                continue;
+                            }
+                            random.setSeed(seed);
+                            for (BakedQuad quad : model.getQuads(state, direction, random, modelData, null)) {
+                                renderQuad(
+                                        builder, quad, worldX, worldY, worldZ,
+                                        faceCornerLights, smoothColor
+                                );
+                            }
+                        }
+
                         random.setSeed(seed);
-                        for (BakedQuad quad : model.getQuads(state, direction, random, modelData, null)) {
+                        for (BakedQuad quad : model.getQuads(state, null, random, modelData, null)) {
                             renderQuad(
                                     builder, quad, worldX, worldY, worldZ,
                                     faceCornerLights, smoothColor
                             );
                         }
-                    }
-
-                    random.setSeed(seed);
-                    for (BakedQuad quad : model.getQuads(state, null, random, modelData, null)) {
-                        renderQuad(
-                                builder, quad, worldX, worldY, worldZ,
-                                faceCornerLights, smoothColor
-                        );
-                    }
                     }
                 }
             }
@@ -788,7 +787,9 @@ public final class LightMaskMeshCache {
             return cpuPhase == CpuPhase.FALLBACK && (stage == null || hasUploadWork());
         }
 
-        /** 面角采样会读取目标区块周围一格，因此九宫格内任一区块卸载都会使快照失效。 */
+        /**
+         * 面角采样会读取目标区块周围一格，因此九宫格内任一区块卸载都会使快照失效。
+         */
         private boolean dependsOnChunks(LongSet chunkKeys) {
             for (long chunkKey : chunkKeys) {
                 if (dependentChunks.contains(chunkKey)) {
@@ -895,58 +896,58 @@ public final class LightMaskMeshCache {
             int localZ = (voxelIndex >>> 4) & 15;
             int localY = (voxelIndex >>> 8) & 15;
             try {
-                        BlockState state = candidateStates.get(localX, localY, localZ);
-                        if (state.isAir()) {
-                            return;
-                        }
-                        int worldX = candidateOriginX + localX;
-                        int worldY = candidateOriginY + localY;
-                        int worldZ = candidateOriginZ + localZ;
-                        long packedPos = PackedPosition.pack(worldX, worldY, worldZ);
-                        if (cpuState.directEmissionAt(packedPos) != 0) {
-                            return;
-                        }
-                        LightMaskMeshPrefilter.sampleFaceCorners(
-                                cpuState::lightAt, packedPos, candidateFaceCornerLights
-                        );
-                        if (!LightMaskMeshPrefilter.anyFaceHasLight(candidateFaceCornerLights)) {
-                            return;
-                        }
-                        if (capturedCandidateBytes
-                                > MAX_CAPTURED_CANDIDATE_BYTES - ESTIMATED_CANDIDATE_BYTES) {
-                            switchToStreamingFallback();
-                            return;
-                        }
-                        candidateBlockPos.set(worldX, worldY, worldZ);
-                        BakedModel model = MODEL_CACHE.computeIfAbsent(state, candidateShaper::getBlockModel);
-                        ModelData modelData = level.getModelData(candidateBlockPos);
-                        modelData = model.getModelData(level, candidateBlockPos, state, modelData);
-                        int visibleFaceMask = 0;
-                        for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
-                            candidateNeighborPos.set(PackedPosition.offset(packedPos, directionIndex));
-                            if (Block.shouldRenderFace(
-                                    state,
-                                    level,
-                                    candidateBlockPos,
-                                    DIRECTIONS[directionIndex],
-                                    candidateNeighborPos
-                            )) {
-                                visibleFaceMask |= 1 << directionIndex;
-                            }
-                        }
-                        if (currentCandidates == null) {
-                            currentCandidates = new ArrayList<>();
-                        }
-                        currentCandidates.add(new MeshBuildSnapshot.Candidate(
-                                packedPos,
-                                state,
-                                model,
-                                modelData,
-                                state.getSeed(candidateBlockPos),
-                                candidateFaceCornerLights,
-                                visibleFaceMask
-                        ));
-                        capturedCandidateBytes += ESTIMATED_CANDIDATE_BYTES;
+                BlockState state = candidateStates.get(localX, localY, localZ);
+                if (state.isAir()) {
+                    return;
+                }
+                int worldX = candidateOriginX + localX;
+                int worldY = candidateOriginY + localY;
+                int worldZ = candidateOriginZ + localZ;
+                long packedPos = PackedPosition.pack(worldX, worldY, worldZ);
+                if (cpuState.directEmissionAt(packedPos) != 0) {
+                    return;
+                }
+                LightMaskMeshPrefilter.sampleFaceCorners(
+                        cpuState::lightAt, packedPos, candidateFaceCornerLights
+                );
+                if (!LightMaskMeshPrefilter.anyFaceHasLight(candidateFaceCornerLights)) {
+                    return;
+                }
+                if (capturedCandidateBytes
+                        > MAX_CAPTURED_CANDIDATE_BYTES - ESTIMATED_CANDIDATE_BYTES) {
+                    switchToStreamingFallback();
+                    return;
+                }
+                candidateBlockPos.set(worldX, worldY, worldZ);
+                BakedModel model = MODEL_CACHE.computeIfAbsent(state, candidateShaper::getBlockModel);
+                ModelData modelData = level.getModelData(candidateBlockPos);
+                modelData = model.getModelData(level, candidateBlockPos, state, modelData);
+                int visibleFaceMask = 0;
+                for (int directionIndex = 0; directionIndex < DIRECTIONS.length; directionIndex++) {
+                    candidateNeighborPos.set(PackedPosition.offset(packedPos, directionIndex));
+                    if (Block.shouldRenderFace(
+                            state,
+                            level,
+                            candidateBlockPos,
+                            DIRECTIONS[directionIndex],
+                            candidateNeighborPos
+                    )) {
+                        visibleFaceMask |= 1 << directionIndex;
+                    }
+                }
+                if (currentCandidates == null) {
+                    currentCandidates = new ArrayList<>();
+                }
+                currentCandidates.add(new MeshBuildSnapshot.Candidate(
+                        packedPos,
+                        state,
+                        model,
+                        modelData,
+                        state.getSeed(candidateBlockPos),
+                        candidateFaceCornerLights,
+                        visibleFaceMask
+                ));
+                capturedCandidateBytes += ESTIMATED_CANDIDATE_BYTES;
             } finally {
                 if (candidateVoxelIndex == 4096) {
                     if (currentCandidates != null && !currentCandidates.isEmpty()) {
@@ -1122,7 +1123,7 @@ public final class LightMaskMeshCache {
                         buffer,
                         mesh.gpuBytes(),
                         VertexBuffer::close,
-                        () -> RenderSystem.assertOnRenderThread()
+                        RenderSystem::assertOnRenderThread
                 );
                 buffer = null;
                 Objects.requireNonNull(stage, "The upload phase has not yet been initialized")

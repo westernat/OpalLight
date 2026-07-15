@@ -1,6 +1,5 @@
 package org.mesdag.opallight.light;
 
-import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
@@ -53,7 +52,7 @@ public final class LightManager {
                 mask = lightMask;
                 if (mask == null) {
                     mask = RenderType.create(
-                            "opallight_light_mask",
+                            "opallight:light_mask",
                             DefaultVertexFormat.POSITION_TEX_COLOR,
                             VertexFormat.Mode.QUADS,
                             256,
@@ -61,21 +60,11 @@ public final class LightManager {
                             true,
                             RenderType.CompositeState.builder()
                                     .setShaderState(new RenderStateShard.ShaderStateShard(() -> lightMaskShader))
-                                    .setTextureState(RenderType.BLOCK_SHEET)
+                                    .setTextureState(RenderStateShard.BLOCK_SHEET)
                                     .setTransparencyState(RenderStateShard.ADDITIVE_TRANSPARENCY)
-                                    .setDepthTestState(RenderType.LEQUAL_DEPTH_TEST)
-                                    .setWriteMaskState(RenderType.COLOR_WRITE)
-                                    .setLayeringState(new RenderStateShard.LayeringStateShard(
-                                            "opallight_polygon_offset",
-                                            () -> {
-                                                RenderSystem.polygonOffset(-1.0F, -1.0F);
-                                                RenderSystem.enablePolygonOffset();
-                                            },
-                                            () -> {
-                                                RenderSystem.polygonOffset(0.0F, 0.0F);
-                                                RenderSystem.disablePolygonOffset();
-                                            }
-                                    ))
+                                    .setDepthTestState(RenderStateShard.LEQUAL_DEPTH_TEST)
+                                    .setWriteMaskState(RenderStateShard.COLOR_WRITE)
+                                    .setLayeringState(RenderStateShard.POLYGON_OFFSET_LAYERING)
                                     .createCompositeState(false)
                     );
                     lightMask = mask;

@@ -78,7 +78,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         }
 
         int resultCapacity = (int) Math.min(
-                (long) maxSections,
+                maxSections,
                 (long) changedSections.size() * 27L
         );
         LongOpenHashSet result = new LongOpenHashSet(resultCapacity);
