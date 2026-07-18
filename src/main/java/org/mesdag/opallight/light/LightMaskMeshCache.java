@@ -280,7 +280,6 @@ public final class LightMaskMeshCache {
         if (requested == null || requested.equals(currentStateToken)) {
             return;
         }
-        long started = System.nanoTime();
         LightGeneration<RetainedGpuResource<VertexBuffer>.Lease> restored = requestedStateCacheHit
                 ? requestedGeneration
                 : null;
@@ -292,14 +291,7 @@ public final class LightMaskMeshCache {
                 previous = stage.commit();
             }
             requestedGeneration = null;
-            long elapsed = System.nanoTime() - started;
             Throwable failure = publishStagedGeneration(restored, requested, previous, true);
-            if (isGenerationActive(restoredGenerationId)) {
-                OpalLight.LOGGER.debug(
-                        "RGB mesh state restore: buffers={}, time={}us",
-                        MESHES.activeSize(), elapsed / 1_000L
-                );
-            }
             rethrow(failure);
             return;
         }
@@ -651,7 +643,6 @@ public final class LightMaskMeshCache {
         private final @Nullable RgbLightEngine.ChunkSnapshot cpuState;
         private final long generationId;
         private final MeshRequestKey requestKey;
-        private final long startedNanos = System.nanoTime();
         private Long2ObjectOpenHashMap<MeshBuildSnapshot.BuiltSection> built = new Long2ObjectOpenHashMap<>();
         private final Long2ObjectOpenHashMap<RetainedGpuResource<VertexBuffer>.Lease> generationResources = new Long2ObjectOpenHashMap<>();
         private final Long2ObjectOpenHashMap<PalettedContainer<BlockState>> copiedSections = new Long2ObjectOpenHashMap<>();
@@ -665,14 +656,6 @@ public final class LightMaskMeshCache {
         private int candidateOriginY;
         private int candidateOriginZ;
         private int fallbackSectionIndex;
-        private int prefilteredSections;
-        private long meshCpuNanos;
-        private long workerMeshNanos;
-        private long maxCpuSliceNanos;
-        private int cpuSliceCount;
-        private long uploadNanos;
-        private long maxUploadSliceNanos;
-        private int uploadSliceCount;
         private @Nullable AtomicMeshPublication<RetainedGpuResource<VertexBuffer>.Lease>.Stage stage;
         private long[] activeKeys = new long[0];
         private final LongArrayList uploadKeys = new LongArrayList();
@@ -681,7 +664,6 @@ public final class LightMaskMeshCache {
         private long gpuBytes;
         private long pendingCpuBytes;
         private long capturedCandidateBytes;
-        private int nonEmptySections;
         private boolean finished;
         private @Nullable PalettedContainer<BlockState> candidateStates;
         private @Nullable List<MeshBuildSnapshot.Candidate> currentCandidates;
@@ -769,7 +751,7 @@ public final class LightMaskMeshCache {
                 pollWorker();
                 return;
             }
-            RenderUploadBudget.Slice slice = switch (cpuPhase) {
+            switch (cpuPhase) {
                 case CAPTURE_SECTIONS -> RENDER_MESH_BUDGET.run(
                         () -> cpuPhase == CpuPhase.CAPTURE_SECTIONS && captureSectionIndex < captureSections.length,
                         () -> captureNextSection(level)
@@ -783,10 +765,7 @@ public final class LightMaskMeshCache {
                         () -> buildNextFallbackSection(level, engine)
                 );
                 case WAITING_WORKER, COMPLETE -> throw new IllegalStateException("Invalid CPU mesh phase state");
-            };
-            meshCpuNanos = saturatedAdd(meshCpuNanos, slice.elapsedNanos());
-            maxCpuSliceNanos = Math.max(maxCpuSliceNanos, slice.elapsedNanos());
-            cpuSliceCount++;
+            }
             advanceCpuPhase();
         }
 
@@ -831,7 +810,6 @@ public final class LightMaskMeshCache {
             long sectionKey = sections[candidateSectionIndex];
             if (candidateStates == null) {
                 if (LightMaskMeshPrefilter.sectionCannotContainLitSurface(lightSections, sectionKey)) {
-                    prefilteredSections++;
                     candidateSectionIndex++;
                     return;
                 }
@@ -936,7 +914,6 @@ public final class LightMaskMeshCache {
         private void buildNextFallbackSection(ClientLevel level, RgbLightEngine engine) {
             long sectionKey = sections[fallbackSectionIndex++];
             if (LightMaskMeshPrefilter.sectionCannotContainLitSurface(lightSections, sectionKey)) {
-                prefilteredSections++;
                 return;
             }
             LongToIntFunction lightLookup = cpuState == null ? engine::getLight : cpuState::lightAt;
@@ -987,10 +964,8 @@ public final class LightMaskMeshCache {
                     MeshBuildSnapshot.BuiltSection mesh = built.get(sectionKey);
                     uploadKeys.add(sectionKey);
                     pendingCpuBytes = saturatedAdd(pendingCpuBytes, mesh.gpuBytes());
-                    nonEmptySections++;
                 }
             }
-            workerMeshNanos = candidate.workerNanos();
             cpuPhase = CpuPhase.COMPLETE;
         }
 
@@ -1002,7 +977,6 @@ public final class LightMaskMeshCache {
             currentCandidates = null;
             candidateVoxelIndex = 0;
             fallbackSectionIndex = 0;
-            prefilteredSections = 0;
             cpuPhase = CpuPhase.FALLBACK;
         }
 
@@ -1010,7 +984,6 @@ public final class LightMaskMeshCache {
             built.put(sectionKey, mesh);
             uploadKeys.add(sectionKey);
             pendingCpuBytes = saturatedAdd(pendingCpuBytes, mesh.gpuBytes());
-            nonEmptySections++;
         }
 
         private enum CpuPhase {
@@ -1023,10 +996,7 @@ public final class LightMaskMeshCache {
 
         private void processUploadSlice() {
             initializeUpload();
-            RenderUploadBudget.Slice slice = RENDER_MESH_BUDGET.run(this::hasUploadWork, this::uploadNext);
-            uploadNanos = saturatedAdd(uploadNanos, slice.elapsedNanos());
-            maxUploadSliceNanos = Math.max(maxUploadSliceNanos, slice.elapsedNanos());
-            uploadSliceCount++;
+            RENDER_MESH_BUDGET.run(this::hasUploadWork, this::uploadNext);
         }
 
         private void initializeUpload() {
@@ -1188,21 +1158,6 @@ public final class LightMaskMeshCache {
             }
             finished = true;
             closeBuiltMeshes();
-            long elapsed = System.nanoTime() - startedNanos;
-            if (sections.length > 16 || elapsed > 2_000_000L) {
-                OpalLight.LOGGER.debug(
-                        "RGB mesh staged rebuild: dirty={}, prefiltered={}, nonEmpty={}, buffers={}, atomic={}, "
-                                + "cpuTotal={}us, cpuMaxSlice={}us, cpuSliceCount={}, "
-                                + "worker={}us, uploadTotal={}us, uploadMaxSlice={}us, "
-                                + "uploadSliceCount={}, elapsed={}us",
-                        sections.length, prefilteredSections, nonEmptySections, MESHES.activeSize(),
-                        atomicBulkReplacement,
-                        meshCpuNanos / 1_000L, maxCpuSliceNanos / 1_000L, cpuSliceCount,
-                        workerMeshNanos / 1_000L,
-                        uploadNanos / 1_000L, maxUploadSliceNanos / 1_000L, uploadSliceCount,
-                        elapsed / 1_000L
-                );
-            }
         }
 
         @Override

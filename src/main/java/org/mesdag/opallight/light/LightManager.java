@@ -97,9 +97,7 @@ public final class LightManager {
                             task.pendingWork, task.worldSnapshot, cancellation::isCancelled
                     ),
                     task.bulkIdentity,
-                    task.generationRevisions,
-                    task.identityNanos,
-                    task.worldSnapshot.captureNanos()
+                    task.generationRevisions
             )
     );
     private static final LongOpenHashSet LOADED_CHUNKS = new LongOpenHashSet();
@@ -145,10 +143,6 @@ public final class LightManager {
     private static @Nullable RgbGenerationKey submittedAsyncRgbKey;
     private static @Nullable RgbGenerationKey failedAsyncRgbKey;
     private static @Nullable SlicedRgbFallback slicedRgbFallback;
-    private static int pendingSnapshotHits;
-    private static int pendingSnapshotMisses;
-    private static long pendingSnapshotCaptureNanos;
-    private static long pendingSnapshotValidationNanos;
 
     private LightManager() {
     }
@@ -236,7 +230,6 @@ public final class LightManager {
             boolean alreadyLoaded = !LOADED_CHUNKS.add(chunkKey);
             SoftReference<CachedChunk> reference = CHUNK_SNAPSHOTS.get(chunkKey);
             CachedChunk cached = reference == null ? null : reference.get();
-            long validationStarted = System.nanoTime();
             long currentFingerprint = scanChunkIdentity(level, chunk);
             boolean valid = cached != null
                     && cached.revision == contentRevision
@@ -249,15 +242,12 @@ public final class LightManager {
             if (reference != null && !valid) {
                 CHUNK_SNAPSHOTS.remove(chunkKey);
             }
-            pendingSnapshotValidationNanos += System.nanoTime() - validationStarted;
             if (valid) {
-                pendingSnapshotHits++;
                 PENDING_CHUNK_RESTORES.put(chunkKey, cached.snapshot);
                 PENDING_CHUNK_SCANS.remove(chunkKey);
                 PENDING_CHUNK_FINGERPRINTS.put(chunkKey, currentFingerprint);
                 markLifecycleChanged();
             } else if (resident) {
-                pendingSnapshotHits++;
                 PENDING_CHUNK_RESTORES.put(
                         chunkKey,
                         ENGINE.snapshotChunk(chunk.getPos().x, chunk.getPos().z)
@@ -265,7 +255,6 @@ public final class LightManager {
                 PENDING_CHUNK_SCANS.remove(chunkKey);
                 PENDING_CHUNK_FINGERPRINTS.put(chunkKey, currentFingerprint);
             } else {
-                pendingSnapshotMisses++;
                 PENDING_CHUNK_RESTORES.remove(chunkKey);
                 PENDING_CHUNK_SCANS.add(chunkKey);
                 PENDING_CHUNK_FINGERPRINTS.put(chunkKey, currentFingerprint);
@@ -283,7 +272,6 @@ public final class LightManager {
                     && !hasAsyncRgbWork()
                     && !PENDING_CHUNK_SCANS.contains(chunkKey)
                     && !PENDING_CHUNK_RESTORES.containsKey(chunkKey)) {
-                long captureStarted = System.nanoTime();
                 CachedChunk cached = new CachedChunk(
                         contentRevision,
                         fingerprint(chunk),
@@ -291,7 +279,6 @@ public final class LightManager {
                 );
                 CHUNK_SNAPSHOTS.removeValuesIf(reference -> reference.get() == null);
                 CHUNK_SNAPSHOTS.put(chunkKey, new SoftReference<>(cached), cached.snapshot.sectionCount());
-                pendingSnapshotCaptureNanos += System.nanoTime() - captureStarted;
             }
             LOADED_CHUNKS.remove(chunkKey);
             SOURCE_REGISTRY.removeChunk(chunkKey);
@@ -402,7 +389,6 @@ public final class LightManager {
                     failure
             );
         });
-        long lifecycleStarted = System.nanoTime();
         boolean visualOnlyChange = pendingVisualOnlyChange;
         pendingVisualOnlyChange = false;
         boolean processChunkScans = shouldProcessChunkScans();
@@ -475,10 +461,6 @@ public final class LightManager {
             CHUNK_SNAPSHOTS.removeValuesIf(reference -> reference.get() == null);
         }
 
-        long started = System.nanoTime();
-        long identityNanos = 0L;
-        long processNanos;
-        long bulkSnapshotNanos = 0L;
         access.beginBatch();
         RgbLightEngine.Stats stats;
         BulkStateIdentity bulkIdentity = null;
@@ -520,7 +502,6 @@ public final class LightManager {
             if (sliceRequired && !shouldCaptureBulkUpdate()) {
                 // 新变化到达时重新等待 quiet window，避免分帧回退发布 fill 的中间布局。
                 stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                processNanos = 0L;
                 asyncDeferred = true;
             } else if (sliceRequired) {
                 RGB_COORDINATOR.invalidate();
@@ -529,27 +510,20 @@ public final class LightManager {
                 if (slicedRgbFallback == null) {
                     slicedRgbFallback = new SlicedRgbFallback();
                 }
-                long sliceStarted = System.nanoTime();
                 RgbLightEngine.SliceResult slice = ENGINE.processSlice(
                         access, OWNER_PROPAGATION_SLICE_NANOS
                 );
-                long sliceNanos = System.nanoTime() - sliceStarted;
-                slicedRgbFallback.add(slice.stats(), sliceNanos);
+                slicedRgbFallback.add(slice.stats());
                 if (slice.complete()) {
                     stats = slicedRgbFallback.stats();
-                    processNanos = slicedRgbFallback.processNanos;
-                    logSlicedFallbackComplete(slicedRgbFallback);
                     slicedRgbFallback = null;
-                    long identityStarted = System.nanoTime();
                     bulkIdentity = SOURCE_REGISTRY.isEmpty()
                             ? canonicalEmptyBulkStateIdentity()
                             : bulkStateIdentity();
                     generationRevisions = bulkGenerationRevisions();
-                    identityNanos = System.nanoTime() - identityStarted;
                     clearBulkCaptureWindow();
                 } else {
                     stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                    processNanos = 0L;
                     asyncDeferred = true;
                 }
             } else if (completedAsync.isPresent()) {
@@ -558,9 +532,6 @@ public final class LightManager {
                 AsyncRgbResult result = completed.value();
                 ENGINE.publishCandidate(result.candidate);
                 stats = result.candidate.stats();
-                processNanos = completed.workerNanos();
-                identityNanos = result.identityNanos;
-                bulkSnapshotNanos = result.captureNanos;
                 bulkIdentity = result.bulkIdentity;
                 generationRevisions = result.generationRevisions;
                 selectedBulkSnapshot = result.candidate.snapshot();
@@ -570,32 +541,23 @@ public final class LightManager {
                 submittedAsyncRgbKey = null;
                 failedAsyncRgbKey = null;
                 clearBulkCaptureWindow();
-                OpalLight.LOGGER.debug(
-                        "RGB worker candidate accepted: checked={}, sections={}, capture={}us, worker={}us",
-                        stats.checkedBlocks(), result.candidate.snapshot().sectionCount(),
-                        result.captureNanos / 1_000L, completed.workerNanos() / 1_000L
-                );
             } else if (bulkCandidate && asyncKey.equals(submittedAsyncRgbKey) && hasAsyncRgbWork()) {
                 // 同一 revision 已在 worker 中；保持完整旧代，不重复捕获、不重复提交。
                 stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                processNanos = 0L;
                 asyncDeferred = true;
             } else if (bulkCandidate && !shouldCaptureBulkUpdate()) {
                 // quiet/max-wait 到达前禁止 cache lookup/activation，避免发布 fill 的中间布局。
                 stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                processNanos = 0L;
                 asyncDeferred = true;
             } else if (bulkCandidate) {
                 if (asyncKey.equals(submittedAsyncRgbKey)) {
                     // worker 异常退出且没有结果时允许当前 revision 重新提交。
                     submittedAsyncRgbKey = null;
                 }
-                long identityStarted = System.nanoTime();
                 bulkIdentity = canonicalEmptyFastPath
                         ? canonicalEmptyBulkStateIdentity()
                         : bulkStateIdentity();
                 generationRevisions = bulkGenerationRevisions();
-                identityNanos = System.nanoTime() - identityStarted;
                 selectedBulkSnapshot = LightMaskMeshCache.prepareCachedBulkState(
                         bulkIdentity, generationRevisions
                 );
@@ -618,36 +580,25 @@ public final class LightManager {
                         BULK_STATE_SNAPSHOTS.remove(bulkIdentity);
                     }
                 }
-                OpalLight.LOGGER.debug(
-                        "RGB bulk lookup: fingerprint={}, entries={}, chunks={}, cpuHit={}, pairedGpuHit={}",
-                        Long.toUnsignedString(bulkIdentity.logFingerprint), BULK_STATE_SNAPSHOTS.size(),
-                        bulkIdentity.loadedChunks.length, bulkCacheHit, pairedGpuCacheHit
-                );
                 if (!bulkCacheHit && !canonicalEmptyFastPath) {
                     if (forceSyncAfterWorkerFailure) {
                         // 快照专用适配失败时只回退一次 live reference；每帧仍受预算约束。
                         failedAsyncRgbKey = null;
                         slicedRgbFallback = new SlicedRgbFallback();
-                        long sliceStarted = System.nanoTime();
                         RgbLightEngine.SliceResult slice = ENGINE.processSlice(
                                 access, OWNER_PROPAGATION_SLICE_NANOS
                         );
-                        long sliceNanos = System.nanoTime() - sliceStarted;
-                        slicedRgbFallback.add(slice.stats(), sliceNanos);
+                        slicedRgbFallback.add(slice.stats());
                         if (slice.complete()) {
                             stats = slicedRgbFallback.stats();
-                            processNanos = slicedRgbFallback.processNanos;
-                            logSlicedFallbackComplete(slicedRgbFallback);
                             slicedRgbFallback = null;
                             clearBulkCaptureWindow();
                         } else {
                             stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                            processNanos = 0L;
                             asyncDeferred = true;
                         }
                     } else {
                         stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                        processNanos = 0L;
                         asyncDeferred = true;
                     }
                     if (!forceSyncAfterWorkerFailure && shouldCaptureBulkUpdate()) {
@@ -667,39 +618,27 @@ public final class LightManager {
                                             pendingWork,
                                             worldSnapshot,
                                             bulkIdentity,
-                                            generationRevisions,
-                                            identityNanos
+                                            generationRevisions
                                     )
                             );
                             submittedAsyncRgbKey = asyncKey;
-                            bulkSnapshotNanos = worldSnapshot.captureNanos();
                             clearBulkCaptureWindow();
-                            OpalLight.LOGGER.debug(
-                                    "RGB worker candidate submitted: changes={}, sections={}, capture={}us",
-                                    pendingWork.changedBlockCount(), worldSnapshot.capturedSectionCount(),
-                                    worldSnapshot.captureNanos() / 1_000L
-                            );
                         } else {
                             // transient 预算溢出只放弃异步加速；live reference 跨帧精确收敛。
                             RGB_COORDINATOR.invalidate();
                             submittedAsyncRgbKey = null;
                             slicedRgbFallback = new SlicedRgbFallback();
-                            long sliceStarted = System.nanoTime();
                             RgbLightEngine.SliceResult slice = ENGINE.processSlice(
                                     access, OWNER_PROPAGATION_SLICE_NANOS
                             );
-                            long sliceNanos = System.nanoTime() - sliceStarted;
-                            slicedRgbFallback.add(slice.stats(), sliceNanos);
+                            slicedRgbFallback.add(slice.stats());
                             if (slice.complete()) {
                                 stats = slicedRgbFallback.stats();
-                                processNanos = slicedRgbFallback.processNanos;
-                                logSlicedFallbackComplete(slicedRgbFallback);
                                 slicedRgbFallback = null;
                                 asyncDeferred = false;
                                 clearBulkCaptureWindow();
                             } else {
                                 stats = new RgbLightEngine.Stats(0, 0, 0, 0, 0);
-                                processNanos = 0L;
                                 asyncDeferred = true;
                             }
                             OpalLight.LOGGER.warn(
@@ -713,17 +652,13 @@ public final class LightManager {
                     RGB_COORDINATOR.invalidate();
                     submittedAsyncRgbKey = null;
                     failedAsyncRgbKey = null;
-                    long processStarted = System.nanoTime();
                     stats = canonicalEmptyFastPath && !bulkCacheHit
                             ? ENGINE.clearToCanonicalEmpty()
                             : ENGINE.process(access);
-                    processNanos = System.nanoTime() - processStarted;
                     clearBulkCaptureWindow();
                 }
             } else {
-                long processStarted = System.nanoTime();
                 stats = ENGINE.process(access);
-                processNanos = System.nanoTime() - processStarted;
                 clearBulkCaptureWindow();
             }
         } finally {
@@ -733,17 +668,10 @@ public final class LightManager {
             loadedIdentityRevision = contentRevision;
         }
         if (bulkCandidate && !bulkCacheHit && !asyncDeferred) {
-            long snapshotStarted = System.nanoTime();
             RgbLightEngine.ChunkSnapshot snapshot = selectedBulkSnapshot != null
                     ? selectedBulkSnapshot
                     : ENGINE.snapshotAll();
             selectedBulkSnapshot = snapshot;
-            long publishedStateSnapshotNanos = System.nanoTime() - snapshotStarted;
-            // 异步冷构建时优先保留更关键的 live-world capture 时间，不能被随后很小的
-            // 冻结 CPU 状态引用复制覆盖；同步/分帧路径则继续记录发布快照自身耗时。
-            if (bulkSnapshotNanos == 0L) {
-                bulkSnapshotNanos = publishedStateSnapshotNanos;
-            }
             BULK_STATE_SNAPSHOTS.put(
                     bulkIdentity,
                     new CachedBulkState(
@@ -751,11 +679,6 @@ public final class LightManager {
                             snapshot
                     ),
                     bulkStateCacheWeight(bulkIdentity, snapshot)
-            );
-            OpalLight.LOGGER.debug(
-                    "RGB bulk snapshot stored: fingerprint={}, entries={}, bytes={}, chunks={}",
-                    Long.toUnsignedString(bulkIdentity.logFingerprint), BULK_STATE_SNAPSHOTS.size(),
-                    BULK_STATE_SNAPSHOTS.totalWeight(), LOADED_CHUNKS.size()
             );
         }
         if (bulkCandidate && !asyncDeferred && !cpuActivationDeferred) {
@@ -779,36 +702,6 @@ public final class LightManager {
         }
         if (!asyncDeferred) {
             ENGINE.drainDirtyMeshSections(LightMaskMeshCache::markDirty);
-        }
-        long elapsed = System.nanoTime() - started;
-        if (!asyncDeferred && (stats.operations() > 10_000 || elapsed > 2_000_000L)) {
-            OpalLight.LOGGER.debug(
-                    "RGB light flush: checked={}, decrease={}, increase={}, changed={}, dirtyAttempts={}, sections={}, bulkHit={}, emptyFastPath={}, time={}us",
-                    stats.checkedBlocks(), stats.decreaseSteps(), stats.increaseSteps(), stats.valueChanges(),
-                    stats.meshDirtySectionAttempts(), ENGINE.allocatedSectionCount(), bulkCacheHit,
-                    canonicalEmptyFastPath && !bulkCacheHit, elapsed / 1_000L
-            );
-            if (bulkCandidate) {
-                OpalLight.LOGGER.debug(
-                        "RGB bulk phases: sources={}, identity={}us, process={}us, snapshot={}us, worldScans=0",
-                        SOURCE_REGISTRY.size(), identityNanos / 1_000L, processNanos / 1_000L,
-                        bulkSnapshotNanos / 1_000L
-                );
-            }
-        }
-        if (unloadedChunkCount != 0 || restoredChunkCount != 0 || scannedChunkCount != 0) {
-            OpalLight.LOGGER.debug(
-                    "RGB chunk batch: unloaded={}, restored={}, scanned={}, hits={}, misses={}, capture={}us, validation={}us, total={}us",
-                    unloadedChunkCount, restoredChunkCount, scannedChunkCount,
-                    pendingSnapshotHits, pendingSnapshotMisses,
-                    pendingSnapshotCaptureNanos / 1_000L,
-                    pendingSnapshotValidationNanos / 1_000L,
-                    (System.nanoTime() - lifecycleStarted) / 1_000L
-            );
-            pendingSnapshotHits = 0;
-            pendingSnapshotMisses = 0;
-            pendingSnapshotCaptureNanos = 0;
-            pendingSnapshotValidationNanos = 0;
         }
     }
 
@@ -848,10 +741,6 @@ public final class LightManager {
         failedAsyncRgbKey = null;
         slicedRgbFallback = null;
         pendingVisualOnlyChange = false;
-        pendingSnapshotHits = 0;
-        pendingSnapshotMisses = 0;
-        pendingSnapshotCaptureNanos = 0;
-        pendingSnapshotValidationNanos = 0;
     }
 
     /// 只允许网格发布器在同一 generation 的 VBO 已经 active 后采用对应 CPU 快照。
@@ -923,15 +812,6 @@ public final class LightManager {
     private static void clearBulkCaptureWindow() {
         bulkBatchStartedNanos = 0L;
         lastBulkChangeNanos = 0L;
-    }
-
-    private static void logSlicedFallbackComplete(SlicedRgbFallback fallback) {
-        OpalLight.LOGGER.debug(
-                "RGB owner sliced fallback complete: total={}us, maxSlice={}us, slices={}",
-                fallback.processNanos / 1_000L,
-                fallback.maxSliceNanos / 1_000L,
-                fallback.slices
-        );
     }
 
     private static long fingerprint(LevelChunk chunk) {
@@ -1061,23 +941,11 @@ public final class LightManager {
         long[] relevantChunkFingerprints = BulkStateDependencies.relevantChunkFingerprints(
                 relevantLoadedChunks, LOADED_CHUNK_FINGERPRINTS
         );
-        long logFingerprint = fingerprintMix(0xBB67_AE85_84CA_A73BL ^ propagationRevision);
-        for (int index = 0; index < sourcePositions.length; index++) {
-            long position = sourcePositions[index];
-            int color = Short.toUnsignedInt(sourceColors[index]);
-            logFingerprint = fingerprintMix(logFingerprint ^ position ^ Long.rotateLeft(color, 19));
-        }
-        for (int index = 0; index < relevantLoadedChunks.length; index++) {
-            logFingerprint = fingerprintMix(
-                    logFingerprint ^ relevantLoadedChunks[index]
-                            ^ Long.rotateLeft(relevantChunkFingerprints[index], 23)
-            );
-        }
         return new BulkStateIdentity(
                 activeLevel.dimension().location().toString(),
                 propagationRevision, visualRevision,
                 relevantLoadedChunks, relevantChunkFingerprints,
-                sourcePositions, sourceColors, logFingerprint
+                sourcePositions, sourceColors
         );
     }
 
@@ -1085,12 +953,6 @@ public final class LightManager {
     /// 修订一致，任意大批量全清都指向同一个 exact identity，避免不同建筑清空后制造多份零状态。
     private static BulkStateIdentity canonicalEmptyBulkStateIdentity() {
         String dimension = activeLevel.dimension().location().toString();
-        long fingerprint = fingerprintMix(
-                0xA54F_F53A_5F1D_36F1L
-                        ^ dimension.hashCode()
-                        ^ propagationRevision
-                        ^ Long.rotateLeft(visualRevision, 17)
-        );
         return new BulkStateIdentity(
                 dimension,
                 propagationRevision,
@@ -1098,8 +960,7 @@ public final class LightManager {
                 new long[0],
                 new long[0],
                 new long[0],
-                new short[0],
-                fingerprint
+                new short[0]
         );
     }
 
@@ -1113,14 +974,6 @@ public final class LightManager {
             return opacity;
         }
         return 0x1_0000_0000L | Integer.toUnsignedLong(Block.getId(state));
-    }
-
-    private static long fingerprintMix(long value) {
-        value ^= value >>> 30;
-        value *= 0xBF58_476D_1CE4_E5B9L;
-        value ^= value >>> 27;
-        value *= 0x94D0_49BB_1331_11EBL;
-        return value ^ value >>> 31;
     }
 
     /// 生成复合缓存的生命周期修订键。
@@ -1177,19 +1030,13 @@ public final class LightManager {
         private long increaseSteps;
         private long valueChanges;
         private long meshDirtySectionAttempts;
-        private long processNanos;
-        private long maxSliceNanos;
-        private int slices;
 
-        void add(RgbLightEngine.Stats stats, long elapsedNanos) {
+        void add(RgbLightEngine.Stats stats) {
             checkedBlocks += stats.checkedBlocks();
             decreaseSteps += stats.decreaseSteps();
             increaseSteps += stats.increaseSteps();
             valueChanges += stats.valueChanges();
             meshDirtySectionAttempts += stats.meshDirtySectionAttempts();
-            processNanos += elapsedNanos;
-            maxSliceNanos = Math.max(maxSliceNanos, elapsedNanos);
-            slices++;
         }
 
         RgbLightEngine.Stats stats() {
@@ -1219,16 +1066,13 @@ public final class LightManager {
             RgbLightEngine.PendingWork pendingWork,
             WorldLightSnapshot worldSnapshot,
             BulkStateIdentity bulkIdentity,
-            LightGeneration.RevisionKey generationRevisions,
-            long identityNanos
+            LightGeneration.RevisionKey generationRevisions
     ) {}
 
     private record AsyncRgbResult(
             RgbLightEngine.Candidate candidate,
             BulkStateIdentity bulkIdentity,
-            LightGeneration.RevisionKey generationRevisions,
-            long identityNanos,
-            long captureNanos
+            LightGeneration.RevisionKey generationRevisions
     ) {}
 
     private record CachedBulkState(
@@ -1250,7 +1094,6 @@ public final class LightManager {
         private final long[] chunkFingerprints;
         private final long[] sourcePositions;
         private final short[] sourceColors;
-        private final long logFingerprint;
         private final int hashCode;
 
         private BulkStateIdentity(
@@ -1260,8 +1103,7 @@ public final class LightManager {
                 long[] loadedChunks,
                 long[] chunkFingerprints,
                 long[] sourcePositions,
-                short[] sourceColors,
-                long logFingerprint
+                short[] sourceColors
         ) {
             this.dimension = dimension;
             this.propagationRevision = propagationRevision;
@@ -1270,7 +1112,6 @@ public final class LightManager {
             this.chunkFingerprints = chunkFingerprints;
             this.sourcePositions = sourcePositions;
             this.sourceColors = sourceColors;
-            this.logFingerprint = logFingerprint;
             int hash = dimension.hashCode();
             hash = 31 * hash + Long.hashCode(propagationRevision);
             hash = 31 * hash + Long.hashCode(visualRevision);

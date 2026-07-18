@@ -9,9 +9,6 @@ import java.util.function.LongSupplier;
 /// 预算只限制本次调用，不限制最终任务数量。每次调用至少处理一项，避免单项成本已经超过
 /// 预算时永久无进展；完成的资源在外部 staging 中保持不可见，直到最后一次原子提交。
 final class RenderUploadBudget {
-    record Slice(int processedItems, boolean complete, long elapsedNanos) {
-    }
-
     private final long budgetNanos;
     private final LongSupplier clock;
 
@@ -23,7 +20,7 @@ final class RenderUploadBudget {
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
-    Slice run(BooleanSupplier hasNext, Runnable processNext) {
+    void run(BooleanSupplier hasNext, Runnable processNext) {
         Objects.requireNonNull(hasNext, "hasNext");
         Objects.requireNonNull(processNext, "processNext");
         long started = clock.getAsLong();
@@ -35,7 +32,6 @@ final class RenderUploadBudget {
             processNext.run();
             processed++;
         }
-        return new Slice(processed, !hasNext.getAsBoolean(), elapsed(started));
     }
 
     private long elapsed(long started) {

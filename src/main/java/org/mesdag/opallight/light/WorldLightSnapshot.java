@@ -25,7 +25,6 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
     private final Long2IntOpenHashMap emissions;
     private final Long2IntOpenHashMap boundarySeeds;
     private final AttenuationAccess attenuationAccess;
-    private final long captureNanos;
 
     WorldLightSnapshot(
             int minBuildHeight,
@@ -33,8 +32,7 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
             LongOpenHashSet capturedSections,
             Long2IntOpenHashMap emissions,
             Long2IntOpenHashMap boundarySeeds,
-            AttenuationAccess attenuationAccess,
-            long captureNanos
+            AttenuationAccess attenuationAccess
     ) {
         if (height <= 0) {
             throw new IllegalArgumentException("height must be greater than zero");
@@ -48,7 +46,6 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
         this.boundarySeeds = Objects.requireNonNull(boundarySeeds, "boundarySeeds");
         this.boundarySeeds.defaultReturnValue(0);
         this.attenuationAccess = Objects.requireNonNull(attenuationAccess, "attenuationAccess");
-        this.captureNanos = captureNanos;
     }
 
     /// 把任意数量的方块变化先合并为 changed section，再增加一圈 section halo。
@@ -158,14 +155,6 @@ final class WorldLightSnapshot implements RgbLightEngine.Access {
     @Override
     public void forEachBoundarySeed(RgbLightEngine.Access.BoundarySeedConsumer consumer) {
         boundarySeeds.long2IntEntrySet().forEach(entry -> consumer.accept(entry.getLongKey(), entry.getIntValue()));
-    }
-
-    int capturedSectionCount() {
-        return capturedSections.size();
-    }
-
-    long captureNanos() {
-        return captureNanos;
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {

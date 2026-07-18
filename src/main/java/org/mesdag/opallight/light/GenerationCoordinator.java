@@ -32,7 +32,7 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
         boolean isCancelled();
     }
 
-    record Completed<K, O>(K key, O value, long workerNanos) {
+    record Completed<K, O>(K key, O value) {
     }
 
     private static final class Task<K, I> {
@@ -200,7 +200,6 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
     }
 
     private void build(Task<K, I> task) {
-        long started = System.nanoTime();
         O result = null;
         Throwable buildFailure = null;
         try {
@@ -214,8 +213,6 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
             // 方块/模型扩展也可能抛出 Error；无论何种失败都必须进入统一收尾，不能把 running 永久卡住。
             buildFailure = throwable;
         }
-        long elapsed = System.nanoTime() - started;
-
         SequencedCompleted<K, O> discardedCompleted = null;
         O discardedResult = null;
         long discardedResultSequence = task.sequence();
@@ -236,7 +233,7 @@ final class GenerationCoordinator<K, I, O> implements AutoCloseable {
                     discardedCompleted = detachCompleted();
                     completed = new SequencedCompleted<>(
                             task.sequence(),
-                            new Completed<>(task.key(), result, elapsed)
+                            new Completed<>(task.key(), result)
                     );
                 }
             }

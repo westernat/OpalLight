@@ -61,7 +61,6 @@ final class SnapshotBlockAndTintGetter implements BlockGetter, WorldLightSnapsho
             EmissionResolver emissionResolver,
             int maxSections
     ) {
-        long started = System.nanoTime();
         int minSectionY = level.getMinSection();
         int maxSectionYExclusive = minSectionY + level.getSectionsCount();
         long[] changedPositions = pendingWork.changedPositions();
@@ -153,8 +152,7 @@ final class SnapshotBlockAndTintGetter implements BlockGetter, WorldLightSnapsho
                 capturedSectionKeys,
                 emissions,
                 boundarySeeds,
-                getter,
-                System.nanoTime() - started
+                getter
         ));
     }
 
