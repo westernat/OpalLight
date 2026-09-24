@@ -25,8 +25,6 @@ import java.util.concurrent.CancellationException;
 
 /// 在客户端线程复制传播所需的方块状态，工作线程只读取此快照。
 final class LightPropagationSnapshot implements BlockGetter {
-    record Source(long pos, OpalColor color, int emission) {}
-
     private record ChunkSections(PalettedContainer<BlockState>[] states, BitSet copied) {
         @Nullable BlockState get(BlockPos pos, int minSection) {
             int index = (pos.getY() >> 4) - minSection;
@@ -42,7 +40,7 @@ final class LightPropagationSnapshot implements BlockGetter {
     /// 主线程发布替换集合，工作线程不读取正在修改的哈希表。
     private volatile LongOpenHashSet remainingTargets;
     private final Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections;
-    private final List<Source> sources;
+    private final List<LightSource> sources;
     private final Long2ObjectOpenHashMap<Long2LongOpenHashMap> previousColors;
     private final int minBuildHeight;
     private final int height;
@@ -52,7 +50,7 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     private LightPropagationSnapshot(Long2ObjectOpenHashMap<ChunkSections> chunks, LongOpenHashSet targets,
                                      Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
-                                     List<Source> sources, int minBuildHeight, int height, boolean unsupported) {
+                                     List<LightSource> sources, int minBuildHeight, int height, boolean unsupported) {
         this.chunks = chunks;
         this.targets = targets;
         this.remainingTargets = targets;
@@ -95,7 +93,8 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     static LightPropagationSnapshot capture(Level level, LongOpenHashSet requested,
             Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
-            Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<OpalColor>>> indexedSources) {
+            Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<OpalColor>>> indexedSources,
+            Long2ObjectOpenHashMap<List<LightSource>> dynamicSources) {
         LongOpenHashSet targets = new LongOpenHashSet(requested);
         LongOpenHashSet scanned = new LongOpenHashSet();
         for (long chunkKey : targets) {
@@ -104,17 +103,26 @@ final class LightPropagationSnapshot implements BlockGetter {
                 for (int dz = -1; dz <= 1; dz++) scanned.add(ChunkPos.asLong(cx + dx, cz + dz));
             }
         }
-        List<Source> sources = new ArrayList<>();
+        List<LightSource> sources = new ArrayList<>();
         Long2ObjectOpenHashMap<BitSet> neededSections = new Long2ObjectOpenHashMap<>();
         for (long chunkKey : scanned) {
             var indexed = indexedSources.get(chunkKey);
-            if (indexed == null) continue;
-            for (var entry : indexed.long2ObjectEntrySet()) {
-                long pos = entry.getLongKey();
-                int emission = entry.getValue().rightInt();
-                if (!canReachTarget(pos, emission, targets, restrictedSections)) continue;
-                sources.add(new Source(pos, entry.getValue().left(), emission));
-                includeSourceSections(pos, emission, level.getMinBuildHeight(), level.getMaxBuildHeight(), neededSections);
+            if (indexed != null) {
+                for (var entry : indexed.long2ObjectEntrySet()) {
+                    long pos = entry.getLongKey();
+                    int emission = entry.getValue().rightInt();
+                    if (!canReachTarget(pos, emission, targets, restrictedSections)) continue;
+                    sources.add(new LightSource(pos, entry.getValue().left(), emission));
+                    includeSourceSections(pos, emission, level.getMinBuildHeight(), level.getMaxBuildHeight(), neededSections);
+                }
+            }
+            var moving = dynamicSources.get(chunkKey);
+            if (moving != null) {
+                for (LightSource source : moving) {
+                    if (!canReachTarget(source.pos(), source.emission(), targets, restrictedSections)) continue;
+                    sources.add(source);
+                    includeSourceSections(source.pos(), source.emission(), level.getMinBuildHeight(), level.getMaxBuildHeight(), neededSections);
+                }
             }
         }
         Long2ObjectOpenHashMap<ChunkSections> chunks = new Long2ObjectOpenHashMap<>();
@@ -203,7 +211,7 @@ final class LightPropagationSnapshot implements BlockGetter {
         return sections == null || sections.contains(sectionKey);
     }
 
-    List<Source> sources() {
+    List<LightSource> sources() {
         return sources;
     }
 
@@ -229,7 +237,7 @@ final class LightPropagationSnapshot implements BlockGetter {
         remainingTargets = remaining;
     }
 
-    boolean canStillReachTarget(Source source) {
+    boolean canStillReachTarget(LightSource source) {
         LongOpenHashSet remaining = remainingTargets;
         return remaining == targets || canReachTarget(source.pos(), source.emission(), remaining, restrictedSections);
     }

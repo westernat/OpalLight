@@ -11,6 +11,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.culling.Frustum;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
@@ -29,15 +30,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongPredicate;
 
-import static org.mesdag.opallight.light.LightManager.lightMaskShader;
+import static org.mesdag.opallight.light.LightMeshLayout.*;
 
 public final class LightMaskMeshCache {
-    /// 每组覆盖水平方向二乘二个分段，高度方向一个分段。
-    static final int GROUP_XZ_SECTION_SHIFT = 1;
-    static final int GROUP_Y_SECTION_SHIFT = 0;
-    static final int GROUP_XZ_BLOCK_SHIFT = 4 + GROUP_XZ_SECTION_SHIFT;
-    static final int GROUP_Y_BLOCK_SHIFT = 4 + GROUP_Y_SECTION_SHIFT;
     private static final Long2ObjectOpenHashMap<VertexBuffer> buffers = new Long2ObjectOpenHashMap<>();
     private static final Long2ObjectOpenHashMap<AABB> bounds = new Long2ObjectOpenHashMap<>();
     private static final LongOpenHashSet dirtyGroups = new LongOpenHashSet();
@@ -125,10 +122,17 @@ public final class LightMaskMeshCache {
     }
 
     static void markDirtyForBounds(int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+        markColorChanged(minX, minY, minZ, maxX, maxY, maxZ, false);
+    }
+
+    static void markColorChanged(int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
+                                 boolean immediate) {
         for (int gx = (minX - 1) >> GROUP_XZ_BLOCK_SHIFT; gx <= (maxX + 1) >> GROUP_XZ_BLOCK_SHIFT; gx++) {
             for (int gy = (minY - 1) >> GROUP_Y_BLOCK_SHIFT; gy <= (maxY + 1) >> GROUP_Y_BLOCK_SHIFT; gy++) {
                 for (int gz = (minZ - 1) >> GROUP_XZ_BLOCK_SHIFT; gz <= (maxZ + 1) >> GROUP_XZ_BLOCK_SHIFT; gz++) {
-                    dirty(SectionPos.asLong(gx, gy, gz));
+                    long key = SectionPos.asLong(gx, gy, gz);
+                    dirty(key);
+                    if (immediate && reloadTransaction == null && buffers.containsKey(key)) urgentGroups.add(key);
                 }
             }
         }
@@ -178,13 +182,14 @@ public final class LightMaskMeshCache {
         }
     }
 
-    public static void draw(Matrix4f viewMatrix, Camera camera) {
+    public static void draw(Matrix4f viewMatrix, Camera camera, ShaderInstance shader,
+                            boolean reloadInProgress, LongPredicate propagationPending) {
         Minecraft minecraft = Minecraft.getInstance();
         Frustum frustum = minecraft.levelRenderer.getFrustum();
         ClientLevel level = minecraft.level;
-        if (level == null || lightMaskShader == null) return;
-        processAsync(level, frustum, !LightManager.isReloadInProgress());
-        if (reloadTransaction != null && !LightManager.isReloadInProgress() && !hasVisiblePending(frustum)) commitDefinitionReload();
+        if (level == null) return;
+        processAsync(level, frustum, !reloadInProgress, propagationPending);
+        if (reloadTransaction != null && !reloadInProgress && !hasVisiblePending(frustum)) commitDefinitionReload();
         if (buffers.isEmpty()) return;
         visibleGroups.clear();
         Vec3 cameraPos = camera.getPosition();
@@ -201,7 +206,7 @@ public final class LightMaskMeshCache {
             }
             visibleGroups.add(key);
         }
-        LightMaskRenderer.draw(viewMatrix, camera, visibleGroups, buffers);
+        LightMaskRenderer.draw(viewMatrix, camera, shader, visibleGroups, buffers);
     }
 
     private static boolean hasVisiblePending(@Nullable Frustum frustum) {
@@ -226,14 +231,14 @@ public final class LightMaskMeshCache {
         return new AABB(x - 1, y - 1, z - 1, x + xzSize + 1, y + ySize + 1, z + xzSize + 1);
     }
 
-    static OptionalLong firstVisiblePropagationGroup(ClientLevel level) {
+    static OptionalLong firstVisiblePropagationGroup(ClientLevel level, LongPredicate propagationPending) {
         var minecraft = Minecraft.getInstance();
         var frustum = minecraft.levelRenderer.getFrustum();
         Vec3 camera = minecraft.gameRenderer.getMainCamera().getPosition();
         double nearest = Double.POSITIVE_INFINITY;
         OptionalLong selected = OptionalLong.empty();
         for (long key : dirtyGroups) {
-            if (!LightPropagator.isGroupPropagationPending(key)) continue;
+            if (!propagationPending.test(key)) continue;
             AABB box = bounds.computeIfAbsent(key, LightMaskMeshCache::groupBounds);
             if (frustum != null && !frustum.isVisible(box) || LightMaskRenderer.isFullyFogged(box, camera)) continue;
             double distance = box.getCenter().distanceToSqr(camera);
@@ -260,7 +265,8 @@ public final class LightMaskMeshCache {
         return selected;
     }
 
-    private static void processAsync(ClientLevel level, @Nullable Frustum frustum, boolean schedule) {
+    private static void processAsync(ClientLevel level, @Nullable Frustum frustum, boolean schedule,
+                                     LongPredicate propagationPending) {
         /// 同一帧捕获的区域共享原版区块快照，下一帧重新捕获世界状态。
         RenderRegionCache regions = schedule && !dirtyGroups.isEmpty() ? new RenderRegionCache() : null;
         if (schedule) rebuildUrgent(level, frustum, regions);
@@ -287,7 +293,7 @@ public final class LightMaskMeshCache {
 
         if (!schedule) return;
         for (int available = 2 - inFlight.size(); available > 0; available--) {
-            if (!scheduleNext(level, frustum, dirtyGroups.iterator(), regions)) break;
+            if (!scheduleNext(level, frustum, dirtyGroups.iterator(), regions, propagationPending)) break;
         }
     }
 
@@ -356,12 +362,13 @@ public final class LightMaskMeshCache {
         }
     }
 
-    private static boolean scheduleNext(ClientLevel level, @Nullable Frustum frustum, LongIterator iterator, RenderRegionCache regions) {
+    private static boolean scheduleNext(ClientLevel level, @Nullable Frustum frustum, LongIterator iterator,
+                                        RenderRegionCache regions, LongPredicate propagationPending) {
         while (iterator.hasNext()) {
             long key = iterator.nextLong();
             if (inFlight.containsKey(key)) continue;
             if (failedGroups.contains(key)) continue;
-            if (LightPropagator.isGroupPropagationPending(key)) continue;
+            if (propagationPending.test(key)) continue;
             AABB box = bounds.computeIfAbsent(key, LightMaskMeshCache::groupBounds);
             if (frustum != null && !frustum.isVisible(box)) continue;
             try {

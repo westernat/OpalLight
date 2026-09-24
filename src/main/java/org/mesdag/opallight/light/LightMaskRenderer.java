@@ -9,6 +9,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.phys.AABB;
@@ -16,9 +17,8 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 
-import static org.mesdag.opallight.light.LightManager.lightMaskShader;
-import static org.mesdag.opallight.light.LightMaskMeshCache.GROUP_XZ_BLOCK_SHIFT;
-import static org.mesdag.opallight.light.LightMaskMeshCache.GROUP_Y_BLOCK_SHIFT;
+import static org.mesdag.opallight.light.LightMeshLayout.GROUP_XZ_BLOCK_SHIFT;
+import static org.mesdag.opallight.light.LightMeshLayout.GROUP_Y_BLOCK_SHIFT;
 
 /// 对可见遮罩先裁决深度，再只给最近的模型面叠合彩光。
 final class LightMaskRenderer {
@@ -53,7 +53,7 @@ final class LightMaskRenderer {
         return distanceSquared >= (double) cutoff * cutoff;
     }
 
-    static void draw(Matrix4f viewMatrix, Camera camera, LongArrayList visibleGroups,
+    static void draw(Matrix4f viewMatrix, Camera camera, ShaderInstance lightMaskShader, LongArrayList visibleGroups,
                      Long2ObjectOpenHashMap<VertexBuffer> buffers) {
         if (visibleGroups.isEmpty()) {
             return;

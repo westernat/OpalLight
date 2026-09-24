@@ -47,9 +47,9 @@ final class LightMaskMeshParts {
             for (int by = -1; by <= 1; by++) {
                 for (int bz = -1; bz <= 1; bz++) {
                     int px = x + bx, py = y + by, pz = z + bz;
-                    if (SectionPos.asLong(px >> LightMaskMeshCache.GROUP_XZ_BLOCK_SHIFT,
-                            py >> LightMaskMeshCache.GROUP_Y_BLOCK_SHIFT,
-                            pz >> LightMaskMeshCache.GROUP_XZ_BLOCK_SHIFT) == key) {
+                    if (SectionPos.asLong(px >> LightMeshLayout.GROUP_XZ_BLOCK_SHIFT,
+                            py >> LightMeshLayout.GROUP_Y_BLOCK_SHIFT,
+                            pz >> LightMeshLayout.GROUP_XZ_BLOCK_SHIFT) == key) {
                         blocks.add(BlockPos.asLong(px, py, pz));
                     }
                 }

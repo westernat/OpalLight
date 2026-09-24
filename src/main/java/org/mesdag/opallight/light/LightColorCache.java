@@ -6,6 +6,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.function.LongConsumer;
+
 public final class LightColorCache {
     public static final LightColorCache INSTANCE = new LightColorCache();
 
@@ -111,8 +113,6 @@ public final class LightColorCache {
     void apply(SectionUpdate update) {
         if (update.colors() == null || update.colors().isEmpty()) sections.remove(update.key());
         else sections.put(update.key(), update.colors());
-        LightMaskMeshCache.markDirtyForBounds(update.minX(), update.minY(), update.minZ(),
-                update.maxX(), update.maxY(), update.maxZ());
     }
 
     private static long pack(float red, float green, float blue) {
@@ -125,15 +125,17 @@ public final class LightColorCache {
         return ((packed >>> shift) & 65535L) / 65535.0F;
     }
 
-    public void clearSection(SectionPos sp) {
+    public boolean clearSection(SectionPos sp) {
         long key = sp.asLong();
-        if (sections.remove(key) != null) {
-            LightMaskMeshCache.markDirtyAroundSection(key);
-        }
+        return sections.remove(key) != null;
     }
 
     public void clearAll() {
         sections.clear();
+    }
+
+    void forEachSection(LongConsumer consumer) {
+        for (long key : sections.keySet()) consumer.accept(key);
     }
 
     Long2LongOpenHashMap getSection(long key) {

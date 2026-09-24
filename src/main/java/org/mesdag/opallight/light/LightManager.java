@@ -1,18 +1,12 @@
 package org.mesdag.opallight.light;
 
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
-import it.unimi.dsi.fastutil.objects.ObjectIntPair;
-import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.ShaderInstance;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -21,12 +15,12 @@ import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
-import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.mesdag.opallight.OpalLight;
 
 import java.io.IOException;
-import java.util.Map;
+import java.util.OptionalLong;
+import java.util.function.Supplier;
 
 @EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightManager {
@@ -43,26 +37,6 @@ public final class LightManager {
         ), shader -> lightMaskShader = shader);
     }
 
-    private static final Map<BlockState, OpalColor> colorCache = new Reference2ObjectOpenHashMap<>();
-
-    public static @Nullable ObjectIntPair<OpalColor> colorWithEmissive(Level level, BlockPos pos, BlockState state) {
-        int emission = state.getLightEmission(level, pos);
-        if (emission > 0) {
-            OpalColor color = colorCache.get(state);
-            if (color == null) {
-                color = LightDataLoader.INSTANCE.getColor(state);
-                if (color == null) {
-                    color = OpalColor.EMPTY;
-                }
-                colorCache.put(state, color);
-            }
-            if (color != OpalColor.EMPTY) {
-                return new ObjectIntImmutablePair<>(color, emission);
-            }
-        }
-        return null;
-    }
-
     @SubscribeEvent
     public static void registerClientReloadListeners(RegisterClientReloadListenersEvent event) {
         event.registerReloadListener((a, b, c, d, e, f) -> LightDataLoader.INSTANCE.reload(a, b, c, d, e, f)
@@ -70,6 +44,7 @@ public final class LightManager {
     }
 
     private static boolean reloadInProgress;
+    private static Boolean previousShaderPackMode;
 
     public static boolean isReloadInProgress() {
         return reloadInProgress;
@@ -78,10 +53,10 @@ public final class LightManager {
     private static void beginResourceReload() {
         boolean previousReloadInProgress = reloadInProgress;
         reloadInProgress = false;
-        colorCache.clear();
+        LightSourceDefinitions.clear();
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
-        int changedSources = LightPropagator.refreshDefinitions(level);
+        int changedSources = LightPropagator.refreshDefinitions(level) + DynamicLightSources.update(level);
         if (changedSources == 0) {
             reloadInProgress = previousReloadInProgress && LightPropagator.hasPendingUpdates();
             return;
@@ -94,7 +69,18 @@ public final class LightManager {
     public static void clientTick$Pre(ClientTickEvent.Pre event) {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
+        updateShaderPackMode();
+        DynamicLightSources.update(level);
         updateLighting(level);
+    }
+
+    private static void updateShaderPackMode() {
+        boolean current = LightShaderCompatibility.isShaderPackInUse();
+        if (previousShaderPackMode != null && previousShaderPackMode != current) {
+            LightMaskMeshCache.invalidate();
+            LightColorCache.INSTANCE.forEachSection(LightMaskMeshCache::markDirtyAroundSection);
+        }
+        previousShaderPackMode = current;
     }
 
     @SubscribeEvent
@@ -117,7 +103,8 @@ public final class LightManager {
         int minSY = SectionPos.blockToSectionCoord(level.getMinBuildHeight());
         int maxSY = SectionPos.blockToSectionCoord(level.getMaxBuildHeight() - 1);
         for (int sy = minSY; sy <= maxSY; sy++) {
-            LightColorCache.INSTANCE.clearSection(SectionPos.of(cp.x, sy, cp.z));
+            SectionPos section = SectionPos.of(cp.x, sy, cp.z);
+            if (LightColorCache.INSTANCE.clearSection(section)) LightMaskMeshCache.markDirtyAroundSection(section.asLong());
         }
         LightMaskMeshCache.discardChunk(cp);
         LightPropagator.forgetChunk(cp);
@@ -132,20 +119,39 @@ public final class LightManager {
             LightMaskMeshCache.invalidate();
             LightMaskRenderer.clearTerrainFog();
             reloadInProgress = false;
+            previousShaderPackMode = null;
         }
     }
 
     /// 通过 Mixin 接入渲染流程以兼容其他渲染模组。
     public static void render(Matrix4f viewMatrix, Camera camera) {
         ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
+        if (level == null || lightMaskShader == null) return;
         /// 工作线程完成后立即衔接网格构建，不必等下一次客户端刻。
         updateLighting(level);
-        LightMaskMeshCache.draw(viewMatrix, camera);
+        LightMaskMeshCache.draw(viewMatrix, camera, lightMaskShader, reloadInProgress,
+                LightPropagator::isGroupPropagationPending);
     }
 
     private static void updateLighting(ClientLevel level) {
-        LightPropagator.flushPending(level, !LightMaskMeshCache.hasMeshes());
+        boolean firstMeshPending = !LightMaskMeshCache.hasMeshes();
+        Supplier<OptionalLong> preferred = () ->
+                LightMaskMeshCache.firstVisiblePropagationGroup(level, LightPropagator::isGroupPropagationPending);
+        var commit = LightPropagator.flushPending(level, firstMeshPending, preferred);
+        if (commit != null) {
+            LightMaskMeshCache.beginDirtyBatch();
+            try {
+                for (var update : commit.updates()) {
+                    LightColorCache.INSTANCE.apply(update);
+                    LightMaskMeshCache.markColorChanged(update.minX(), update.minY(), update.minZ(),
+                            update.maxX(), update.maxY(), update.maxZ(), commit.dynamic());
+                }
+            } finally {
+                LightMaskMeshCache.endDirtyBatch();
+            }
+            /// 发布完成后才允许捕获下一份传播快照。
+            LightPropagator.flushPending(level, firstMeshPending, preferred);
+        }
         if (reloadInProgress) reloadInProgress = LightPropagator.hasPendingUpdates();
     }
 

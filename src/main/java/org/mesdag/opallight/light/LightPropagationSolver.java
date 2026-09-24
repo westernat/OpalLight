@@ -28,7 +28,7 @@ final class LightPropagationSolver {
     static Result compute(LightPropagationSnapshot input, BlockGetter view,
                           LongPredicate loadedChunk, boolean snapshotRead) {
         LongOpenHashSet targets = input.targets();
-        List<LightPropagationSnapshot.Source> sources = input.sources();
+        List<LightSource> sources = input.sources();
         if (snapshotRead && input.unsupported()) {
             return new Result(List.of(), true);
         }
@@ -42,7 +42,7 @@ final class LightPropagationSolver {
             maxZ = Math.max(maxZ, (ChunkPos.getZ(target) << 4) + 15);
         }
         int maxEmission = 0;
-        for (LightPropagationSnapshot.Source source : sources) maxEmission = Math.max(maxEmission, source.emission());
+        for (LightSource source : sources) maxEmission = Math.max(maxEmission, source.emission());
         LongArrayFIFOQueue[] queues = new LongArrayFIFOQueue[maxEmission + 1];
         for (int level = 1; level < queues.length; level++) queues[level] = new LongArrayFIFOQueue();
         /// 每步至少衰减一级；单个光源的可达坐标跨度不超过数组边长，低位索引不会重叠。
@@ -58,7 +58,7 @@ final class LightPropagationSolver {
         BlockPos.MutableBlockPos currentPos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos nextPos = new BlockPos.MutableBlockPos();
         int minBuildHeight = input.minBuildHeight(), height = input.height();
-        for (LightPropagationSnapshot.Source source : sources) {
+        for (LightSource source : sources) {
             input.checkCancelled();
             if (!input.canStillReachTarget(source)) {
                 continue;

@@ -18,6 +18,7 @@ import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.util.FastColor;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.RenderShape;
@@ -31,10 +32,7 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
-import static org.mesdag.opallight.light.LightMaskMeshCache.GROUP_XZ_SECTION_SHIFT;
-import static org.mesdag.opallight.light.LightMaskMeshCache.GROUP_Y_SECTION_SHIFT;
-import static org.mesdag.opallight.light.LightMaskMeshCache.GROUP_XZ_BLOCK_SHIFT;
-import static org.mesdag.opallight.light.LightMaskMeshCache.GROUP_Y_BLOCK_SHIFT;
+import static org.mesdag.opallight.light.LightMeshLayout.*;
 
 /// 负责生成不可变区块快照，并在工作线程中构建彩光网格。
 final class LightMaskMeshBuilder {
@@ -45,7 +43,7 @@ final class LightMaskMeshBuilder {
             ThreadLocal.withInitial(() -> new LightMeshColorGrid(0));
     record MeshSnapshot(long key, long epoch, int sectionX, int sectionZ,
                         RenderChunkRegion[] regions, List<Long2LongOpenHashMap> colorSections,
-                        BlockRenderDispatcher dispatcher) {}
+                        BlockRenderDispatcher dispatcher, boolean shaderPackInUse) {}
 
     /// 原始模型用于重新着色，已编码顶点用于未变化方块的批量复制；发布后均只读。
     record BlockMesh(float[] geometry, byte[] vertices) {}
@@ -84,7 +82,8 @@ final class LightMaskMeshBuilder {
             }
         }
         if (!hasGeometry) return null;
-        return new MeshSnapshot(key, epoch, sx, sz, regions, colorSections, Minecraft.getInstance().getBlockRenderer());
+        return new MeshSnapshot(key, epoch, sx, sz, regions, colorSections,
+                Minecraft.getInstance().getBlockRenderer(), LightShaderCompatibility.isShaderPackInUse());
     }
 
     private static LightMeshColorGrid collectColors(MeshSnapshot snapshot) {
@@ -180,6 +179,8 @@ final class LightMaskMeshBuilder {
                     consumer.clear();
                     for (RenderType renderType : model.getRenderTypes(state, random, modelData)) {
                         if (renderType == RenderType.translucent()) continue;
+                        /// 光影包在地形顶点着色器中移动这类几何；静态遮罩不能写入它的旧深度。
+                        if (snapshot.shaderPackInUse() && isPotentiallyWaving(state, region, pos, renderType)) continue;
                         pose.pushPose();
                         /// 模型顶点留在方块局部坐标，避免大世界坐标提前舍入。
                         dispatcher.renderBatched(state, pos, region, pose, consumer, true, random, modelData, renderType);
@@ -197,6 +198,12 @@ final class LightMaskMeshBuilder {
             ModelBlockRenderer.clearCache();
         }
         return finishMesh(memory, vertexCount);
+    }
+
+    private static boolean isPotentiallyWaving(BlockState state, RenderChunkRegion region, BlockPos pos,
+                                               RenderType renderType) {
+        if (renderType != RenderType.cutout() && renderType != RenderType.cutoutMipped()) return false;
+        return state.is(BlockTags.LEAVES) || state.getCollisionShape(region, pos).isEmpty();
     }
 
     private static LongArrayList collectCandidates(long key, LightMeshColorGrid colors) {
