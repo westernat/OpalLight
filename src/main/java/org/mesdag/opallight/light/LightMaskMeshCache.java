@@ -213,6 +213,7 @@ public final class LightMaskMeshCache {
             }
             AABB box = bounds.get(key);
             if (frustum != null && !frustum.isVisible(box)) continue;
+            if (!TerrainSectionVisibility.isVisible(box)) continue;
             if (LightMaskRenderer.isFullyFogged(box, cameraPos)) {
                 continue;
             }
