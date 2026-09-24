@@ -17,15 +17,21 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
     @Override
     public VertexConsumer getBuffer(RenderType renderType) {
-        return new ColoredVertexConsumer(delegate.getBuffer(renderType));
+        return wrap(delegate.getBuffer(renderType), cameraPos);
     }
 
-    private final class ColoredVertexConsumer implements VertexConsumer {
+    public static VertexConsumer wrap(VertexConsumer output, Vec3 cameraPos) {
+        return new ColoredVertexConsumer(output, cameraPos);
+    }
+
+    private static final class ColoredVertexConsumer implements VertexConsumer {
         private final VertexConsumer output;
+        private final Vec3 cameraPos;
         private float red = 1.0F, green = 1.0F, blue = 1.0F;
 
-        private ColoredVertexConsumer(VertexConsumer output) {
+        private ColoredVertexConsumer(VertexConsumer output, Vec3 cameraPos) {
             this.output = output;
+            this.cameraPos = cameraPos;
         }
 
         @Override
