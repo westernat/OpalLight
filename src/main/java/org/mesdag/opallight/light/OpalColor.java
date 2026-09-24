@@ -1,6 +1,7 @@
 package org.mesdag.opallight.light;
 
 import com.mojang.serialization.Codec;
+import com.mojang.serialization.DataResult;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import net.minecraft.util.FastColor;
 import net.minecraft.util.FastColor.ARGB32;
@@ -17,7 +18,13 @@ public record OpalColor(float r, float g, float b) {
             ELEMENT_CODEC.fieldOf("b").forGetter(OpalColor::b)
     ).apply(instance, OpalColor::new));
     public static final Codec<OpalColor> NUMBER_CODEC = Codec.INT.xmap(OpalColor::of, OpalColor::toInt);
-    public static final Codec<OpalColor> STRING_CODEC = Codec.STRING.xmap(OpalColor::of, OpalColor::toString);
+    public static final Codec<OpalColor> STRING_CODEC = Codec.STRING.comapFlatMap(hex -> {
+        try {
+            return DataResult.success(of(hex));
+        } catch (NumberFormatException error) {
+            return DataResult.error(() -> "Invalid hexadecimal light color: " + hex);
+        }
+    }, OpalColor::toString);
     public static final Codec<OpalColor> CODEC = NeoForgeExtraCodecs.withAlternative(
             NeoForgeExtraCodecs.withAlternative(ARRAY_CODEC, OBJECT_CODEC),
             NeoForgeExtraCodecs.withAlternative(NUMBER_CODEC, STRING_CODEC)

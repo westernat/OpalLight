@@ -20,6 +20,7 @@ import net.neoforged.fml.ModLoader;
 import net.neoforged.fml.event.IModBusEvent;
 import net.neoforged.neoforge.common.conditions.ConditionalOps;
 import org.jetbrains.annotations.Nullable;
+import org.mesdag.opallight.OpalLight;
 
 import java.util.List;
 import java.util.Map;
@@ -71,8 +72,10 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
     protected void apply(Map<ResourceLocation, JsonElement> map, ResourceManager manager, ProfilerFiller filler) {
         ConditionalOps<JsonElement> ops = makeConditionalOps();
         Map<Block, List<OpalData>> mutable = new Reference2ObjectOpenHashMap<>();
-        for (JsonElement element : map.values()) {
-            CODEC.parse(ops, element).ifSuccess(mutable::putAll);
+        for (var entry : map.entrySet()) {
+            CODEC.parse(ops, entry.getValue())
+                    .ifError(error -> OpalLight.LOGGER.error("Invalid colored light definition {}: {}", entry.getKey(), error.message()))
+                    .ifSuccess(mutable::putAll);
         }
         ModLoader.postEvent(new ModificationEvent(mutable));
         this.dataByBlock = ImmutableMap.copyOf(mutable);

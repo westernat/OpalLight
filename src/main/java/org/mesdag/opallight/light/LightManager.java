@@ -1,8 +1,6 @@
 package org.mesdag.opallight.light;
 
-import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
 import it.unimi.dsi.fastutil.objects.ObjectIntPair;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
@@ -11,6 +9,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.api.distmarker.Dist;
@@ -20,9 +20,9 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
+import net.neoforged.neoforge.event.level.ChunkEvent;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
-import org.lwjgl.opengl.GL11;
 import org.mesdag.opallight.OpalLight;
 
 import java.io.IOException;
@@ -37,7 +37,8 @@ public final class LightManager {
     public static void registerShaders(RegisterShadersEvent event) throws IOException {
         event.registerShader(new ShaderInstance(
                 event.getResourceProvider(),
-                "opallight:light_mask", // vulkan can only use String instead of ResourceLocation
+                /// VulkanMod 需要字符串形式的着色器名称。
+                "opallight:light_mask",
                 DefaultVertexFormat.POSITION_TEX_COLOR
         ), shader -> lightMaskShader = shader);
     }
@@ -64,54 +65,91 @@ public final class LightManager {
 
     @SubscribeEvent
     public static void registerClientReloadListeners(RegisterClientReloadListenersEvent event) {
-        event.registerReloadListener((a, b, c, d, e, f) -> {
-            colorCache.clear();
-            LightMaskMeshCache.invalidate();
-            return LightDataLoader.INSTANCE.reload(a, b, c, d, e, f);
-        });
+        event.registerReloadListener((a, b, c, d, e, f) -> LightDataLoader.INSTANCE.reload(a, b, c, d, e, f)
+                .thenRun(() -> Minecraft.getInstance().execute(LightManager::beginResourceReload)));
     }
 
-    private static final Map<Long, ObjectIntPair<OpalColor>> pendingToAdd = new Object2ObjectOpenHashMap<>(); // block pos -> color
+    private static boolean reloadInProgress;
 
-    public static void pendingToAdd(BlockPos pos, ObjectIntPair<OpalColor> colorWithEmissive) {
-        pendingToAdd.put(pos.asLong(), colorWithEmissive);
+    public static boolean isReloadInProgress() {
+        return reloadInProgress;
+    }
+
+    private static void beginResourceReload() {
+        boolean previousReloadInProgress = reloadInProgress;
+        reloadInProgress = false;
+        colorCache.clear();
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) return;
+        int changedSources = LightPropagator.refreshDefinitions(level);
+        if (changedSources == 0) {
+            reloadInProgress = previousReloadInProgress && LightPropagator.hasPendingUpdates();
+            return;
+        }
+        LightMaskMeshCache.beginDefinitionReload();
+        reloadInProgress = LightPropagator.hasPendingUpdates();
     }
 
     @SubscribeEvent
     public static void clientTick$Pre(ClientTickEvent.Pre event) {
         ClientLevel level = Minecraft.getInstance().level;
-        if (level == null || pendingToAdd.isEmpty()) return;
-        for (Map.Entry<Long, ObjectIntPair<OpalColor>> entry : pendingToAdd.entrySet()) {
-            BlockPos pos = BlockPos.of(entry.getKey());
-            LightPropagator.propagate(level, pos, entry.getValue());
-            LightColorCache.INSTANCE.put(pos, entry.getValue().left());
+        if (level == null) return;
+        updateLighting(level);
+    }
+
+    @SubscribeEvent
+    public static void chunk$Load(ChunkEvent.Load event) {
+        if (!event.getLevel().isClientSide()) return;
+        ChunkPos cp = event.getChunk().getPos();
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) return;
+        LightPropagator.indexChunk(level, cp);
+        LightMaskMeshCache.refreshLoadedChunk(cp);
+        LightPropagator.scheduleChunkAndNeighbors(cp.x, cp.z);
+    }
+
+    @SubscribeEvent
+    public static void chunk$Unload(ChunkEvent.Unload event) {
+        if (!event.getLevel().isClientSide()) return;
+        ChunkPos cp = event.getChunk().getPos();
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) return;
+        int minSY = SectionPos.blockToSectionCoord(level.getMinBuildHeight());
+        int maxSY = SectionPos.blockToSectionCoord(level.getMaxBuildHeight() - 1);
+        for (int sy = minSY; sy <= maxSY; sy++) {
+            LightColorCache.INSTANCE.clearSection(SectionPos.of(cp.x, sy, cp.z));
         }
-        pendingToAdd.clear();
+        LightMaskMeshCache.discardChunk(cp);
+        LightPropagator.forgetChunk(cp);
+        LightPropagator.scheduleChunkAndNeighbors(cp.x, cp.z);
     }
 
     @SubscribeEvent
     public static void level$Unload(LevelEvent.Unload event) {
         if (event.getLevel().isClientSide()) {
             LightColorCache.INSTANCE.clearAll();
+            LightPropagator.clearAllSources();
             LightMaskMeshCache.invalidate();
-            pendingToAdd.clear();
+            LightMaskRenderer.clearTerrainFog();
+            reloadInProgress = false;
         }
     }
 
-    // use mixin to compatible iris or other mod
+    /// 通过 Mixin 接入渲染流程以兼容其他渲染模组。
     public static void render(Matrix4f viewMatrix, Camera camera) {
-        GlStateManager._depthMask(false);
-        GlStateManager._polygonOffset(-1.0F, -10.0F);
-        GlStateManager._enablePolygonOffset();
-        GlStateManager._enableBlend();
-        GlStateManager._blendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
-
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) return;
+        /// 工作线程完成后立即衔接网格构建，不必等下一次客户端刻。
+        updateLighting(level);
         LightMaskMeshCache.draw(viewMatrix, camera);
+    }
 
-        GlStateManager._blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO);
-        GlStateManager._disableBlend();
-        GlStateManager._disablePolygonOffset();
-        GlStateManager._polygonOffset(0.0F, 0.0F);
-        GlStateManager._depthMask(true);
+    private static void updateLighting(ClientLevel level) {
+        LightPropagator.flushPending(level, !LightMaskMeshCache.hasMeshes());
+        if (reloadInProgress) reloadInProgress = LightPropagator.hasPendingUpdates();
+    }
+
+    public static void captureTerrainFog() {
+        LightMaskRenderer.captureTerrainFog();
     }
 }
