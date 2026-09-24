@@ -4,8 +4,10 @@
     "compatibilityLevel": "JAVA_21",
     "client": [
         "BlockEntityRenderDispatcherMixin",
+        "ClientHooksMixin",
         "EntityRenderDispatcherMixin",
         "FogRendererMixin",
+        "ItemInHandRendererMixin",
         "LevelRendererMixin",
         "LevelChunkMixin",
         "LightEngineMixin",
