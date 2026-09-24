@@ -5,12 +5,12 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.world.phys.Vec3;
 
-/// 在方块实体原有顶点流中加入彩光，保留其纹理、深度和渲染层。
-public final class BlockEntityColorBufferSource implements MultiBufferSource {
+/// 在实体原有顶点流中加入彩光，保留其纹理、深度和渲染层。
+public final class ColoredLightBufferSource implements MultiBufferSource {
     private final MultiBufferSource delegate;
     private final Vec3 cameraPos;
 
-    public BlockEntityColorBufferSource(MultiBufferSource delegate, Vec3 cameraPos) {
+    public ColoredLightBufferSource(MultiBufferSource delegate, Vec3 cameraPos) {
         this.delegate = delegate;
         this.cameraPos = cameraPos;
     }

@@ -16,7 +16,7 @@ public final class LightColorCache {
 
     private LightColorCache() {}
 
-    boolean isEmpty() {
+    public boolean isEmpty() {
         return sections.isEmpty();
     }
 
