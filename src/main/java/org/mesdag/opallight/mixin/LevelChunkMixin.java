@@ -23,7 +23,8 @@ public class LevelChunkMixin {
     @ModifyExpressionValue(method = "setBlockState", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/lighting/LightEngine;hasDifferentLightProperties(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/block/state/BlockState;)Z"))
     private boolean wrapHasDifferentLightProperties(boolean original, @Local(argsOnly = true) BlockPos pos, @Local(argsOnly = true) BlockState state) {
         if (level.isClientSide) {
-            if (LightColorCache.INSTANCE.hasColorNear(pos)) LightMaskMeshCache.invalidateChangedGeometry(pos.asLong());
+            /// 光源移除后旧几何仍可能留在缓存中，方块变化不能依赖当前是否有彩光。
+            LightMaskMeshCache.invalidateChangedGeometry(pos.asLong());
             long key = LightColorCache.sectionKey(pos);
             boolean affected = LightPropagator.isNearAffectedSection(key);
             boolean sourceChanged = LightPropagator.updateSource(level, pos, state);

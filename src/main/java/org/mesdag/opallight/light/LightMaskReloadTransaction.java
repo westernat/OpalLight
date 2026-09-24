@@ -18,6 +18,10 @@ final class LightMaskReloadTransaction implements AutoCloseable {
         return new LongOpenHashSet(ready.keySet());
     }
 
+    boolean contains(long key) {
+        return ready.containsKey(key);
+    }
+
     void stage(long key, @Nullable VertexBuffer buffer,
                @Nullable Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry) {
         Ready old = ready.put(key, new Ready(buffer, geometry));

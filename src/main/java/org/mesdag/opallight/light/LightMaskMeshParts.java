@@ -23,6 +23,19 @@ final class LightMaskMeshParts {
         return rebuild == null ? LongSets.emptySet() : new LongOpenHashSet(rebuild);
     }
 
+    boolean hasCachedGeometryNear(long key, int x, int y, int z) {
+        var geometry = geometryCache.get(key);
+        if (geometry == null) return false;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (geometry.containsKey(BlockPos.asLong(x + dx, y + dy, z + dz))) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     void markBlockChanged(long key, int x, int y, int z) {
         LongOpenHashSet blocks = rebuildBlocks.computeIfAbsent(key, unused -> new LongOpenHashSet());
         addNeighbors(blocks, key, x, y, z);

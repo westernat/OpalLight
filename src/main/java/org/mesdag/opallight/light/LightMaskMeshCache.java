@@ -102,12 +102,18 @@ public final class LightMaskMeshCache {
 
     private static void markBlockAffected(long packedPos, boolean immediate) {
         int x = BlockPos.getX(packedPos), y = BlockPos.getY(packedPos), z = BlockPos.getZ(packedPos);
+        Boolean colorNear = null;
         for (int gx = (x - 1) >> GROUP_XZ_BLOCK_SHIFT; gx <= (x + 1) >> GROUP_XZ_BLOCK_SHIFT; gx++) {
             for (int gy = (y - 1) >> GROUP_Y_BLOCK_SHIFT; gy <= (y + 1) >> GROUP_Y_BLOCK_SHIFT; gy++) {
                 for (int gz = (z - 1) >> GROUP_XZ_BLOCK_SHIFT; gz <= (z + 1) >> GROUP_XZ_BLOCK_SHIFT; gz++) {
                     long key = SectionPos.asLong(gx, gy, gz);
                     boolean hasBuffer = buffers.containsKey(key);
-                    if (!hasBuffer && (!immediate || !(inFlight.containsKey(key) || dirtyGroups.contains(key)))) continue;
+                    boolean staged = reloadTransaction != null && reloadTransaction.contains(key);
+                    if (!hasBuffer && (!immediate || !(inFlight.containsKey(key) || dirtyGroups.contains(key) || staged))) continue;
+                    if (hasBuffer && !parts.hasCachedGeometryNear(key, x, y, z)) {
+                        if (colorNear == null) colorNear = LightColorCache.INSTANCE.hasColorNear(BlockPos.of(packedPos));
+                        if (!colorNear && !inFlight.containsKey(key) && !dirtyGroups.contains(key) && !staged) continue;
+                    }
                     parts.markBlockChanged(key, x, y, z);
                     dirty(key, true);
                     if (immediate && hasBuffer) urgentGroups.add(key);
@@ -179,6 +185,12 @@ public final class LightMaskMeshCache {
         for (long key : inFlight.keySet()) {
             if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
                     && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) dirty(key);
+        }
+        if (reloadTransaction != null) {
+            for (long key : reloadTransaction.keys()) {
+                if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
+                        && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) dirty(key);
+            }
         }
     }
 

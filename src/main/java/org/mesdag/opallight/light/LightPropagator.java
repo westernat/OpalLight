@@ -117,7 +117,10 @@ public final class LightPropagator {
         for (var entry : current.int2ObjectEntrySet()) {
             LightSource old = dynamicSources.get(entry.getIntKey());
             if (entry.getValue().equals(old)) continue;
-            scheduleAround(BlockPos.of(entry.getValue().pos()), entry.getValue().emission(), true);
+            /// 同位置同半径的颜色变化已在旧源范围入队，不再重复合并九个区块。
+            if (old == null || old.pos() != entry.getValue().pos() || old.emission() != entry.getValue().emission()) {
+                scheduleAround(BlockPos.of(entry.getValue().pos()), entry.getValue().emission(), true);
+            }
             if (old == null) changed++;
         }
         if (changed == 0) return 0;

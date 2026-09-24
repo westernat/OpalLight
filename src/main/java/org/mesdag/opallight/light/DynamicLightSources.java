@@ -12,10 +12,13 @@ import net.minecraft.world.item.ItemStack;
 
 /// 将玩家双手和掉落的发光方块物品转换为当前刻的彩光源。
 final class DynamicLightSources {
+    /// 客户端线程逐刻复用；传播器只在发生变化时复制结果。
+    private static final Int2ObjectOpenHashMap<LightSource> current = new Int2ObjectOpenHashMap<>();
+
     private DynamicLightSources() {}
 
     static int update(ClientLevel level) {
-        Int2ObjectOpenHashMap<LightSource> current = new Int2ObjectOpenHashMap<>();
+        current.clear();
         Player localPlayer = Minecraft.getInstance().player;
         if (localPlayer != null) addPlayer(level, localPlayer, current);
         for (Entity entity : level.entitiesForRendering()) {
@@ -23,17 +26,23 @@ final class DynamicLightSources {
             if (entity instanceof Player player) {
                 addPlayer(level, player, current);
             } else if (entity instanceof ItemEntity item) {
-                BlockPos pos = BlockPos.containing(item.getX(), item.getY() + 0.5, item.getZ());
-                add(level, item.getId() * 4 + 2, pos, item.getItem(), current);
+                ItemStack stack = item.getItem();
+                if (stack.getItem() instanceof BlockItem) {
+                    BlockPos pos = BlockPos.containing(item.getX(), item.getY() + 0.5, item.getZ());
+                    add(level, item.getId() * 4 + 2, pos, stack, current);
+                }
             }
         }
         return LightPropagator.replaceDynamicSources(current);
     }
 
     private static void addPlayer(ClientLevel level, Player player, Int2ObjectOpenHashMap<LightSource> current) {
+        ItemStack mainHand = player.getMainHandItem();
+        ItemStack offHand = player.getOffhandItem();
+        if (!(mainHand.getItem() instanceof BlockItem) && !(offHand.getItem() instanceof BlockItem)) return;
         BlockPos pos = BlockPos.containing(player.getX(), player.getEyeY() - 0.3, player.getZ());
-        add(level, player.getId() * 4, pos, player.getMainHandItem(), current);
-        add(level, player.getId() * 4 + 1, pos, player.getOffhandItem(), current);
+        add(level, player.getId() * 4, pos, mainHand, current);
+        add(level, player.getId() * 4 + 1, pos, offHand, current);
     }
 
     private static void add(ClientLevel level, int id, BlockPos pos, ItemStack stack, Int2ObjectOpenHashMap<LightSource> current) {
