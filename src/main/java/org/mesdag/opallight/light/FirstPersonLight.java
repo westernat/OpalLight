@@ -12,6 +12,6 @@ public final class FirstPersonLight {
         var player = Minecraft.getInstance().player;
         if (player == null) return source;
         long color = LightColorCache.INSTANCE.sample(player.getX(), player.getEyeY() - 0.3, player.getZ());
-        return color == 0 ? source : new ColoredLightBufferSource(source, color);
+        return ColoredLightBufferSource.hasTint(color) ? new ColoredLightBufferSource(source, color) : source;
     }
 }

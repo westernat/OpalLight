@@ -1,7 +1,7 @@
 package org.mesdag.opallight.light;
 
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import org.jetbrains.annotations.Nullable;
@@ -21,11 +21,20 @@ public final class LightColorCache {
     }
 
     public boolean hasColorNear(BlockPos pos) {
+        int centerX = pos.getX(), centerY = pos.getY(), centerZ = pos.getZ();
+        /// 查询范围完全落在同一分段时只查一次分段表。
+        boolean sameSection = (centerX & 15) > 0 && (centerX & 15) < 15
+            && (centerY & 15) > 0 && (centerY & 15) < 15
+            && (centerZ & 15) > 0 && (centerZ & 15) < 15;
+        Long2LongOpenHashMap local = sameSection
+            ? sections.get(SectionPos.asLong(centerX >> 4, centerY >> 4, centerZ >> 4)) : null;
+        if (sameSection && local == null) return false;
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -1; dz <= 1; dz++) {
-                    int x = pos.getX() + dx, y = pos.getY() + dy, z = pos.getZ() + dz;
-                    Long2LongOpenHashMap section = sections.get(SectionPos.asLong(x >> 4, y >> 4, z >> 4));
+                    int x = centerX + dx, y = centerY + dy, z = centerZ + dz;
+                    Long2LongOpenHashMap section = sameSection ? local
+                        : sections.get(SectionPos.asLong(x >> 4, y >> 4, z >> 4));
                     if (section != null && section.containsKey(BlockPos.asLong(x, y, z))) return true;
                 }
             }
@@ -54,14 +63,24 @@ public final class LightColorCache {
         double gx = x - 0.5, gy = y - 0.5, gz = z - 0.5;
         int bx = (int) Math.floor(gx), by = (int) Math.floor(gy), bz = (int) Math.floor(gz);
         float fx = (float) (gx - bx), fy = (float) (gy - by), fz = (float) (gz - bz);
+        /// 八个插值点通常位于同一分段，可复用一次哈希查询。
+        boolean sameSection = (bx & 15) != 15 && (by & 15) != 15 && (bz & 15) != 15;
+        Long2LongOpenHashMap local = sameSection
+            ? sections.get(SectionPos.asLong(bx >> 4, by >> 4, bz >> 4)) : null;
+        if (sameSection && local == null) return 0;
         float red = 0, green = 0, blue = 0;
         for (int dx = 0; dx <= 1; dx++) {
             float wx = dx == 0 ? 1 - fx : fx;
+            if (wx == 0) continue;
             for (int dy = 0; dy <= 1; dy++) {
                 float wy = dy == 0 ? 1 - fy : fy;
+                if (wy == 0) continue;
                 for (int dz = 0; dz <= 1; dz++) {
-                    float weight = wx * wy * (dz == 0 ? 1 - fz : fz);
-                    long color = colorAt(bx + dx, by + dy, bz + dz);
+                    float wz = dz == 0 ? 1 - fz : fz;
+                    if (wz == 0) continue;
+                    float weight = wx * wy * wz;
+                    long color = sameSection ? local.get(BlockPos.asLong(bx + dx, by + dy, bz + dz))
+                        : colorAt(bx + dx, by + dy, bz + dz);
                     red += channel(color, 32) * weight;
                     green += channel(color, 16) * weight;
                     blue += channel(color, 0) * weight;

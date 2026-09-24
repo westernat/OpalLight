@@ -23,7 +23,8 @@ public abstract class EntityRenderDispatcherMixin {
         if (entity instanceof ItemEntity item) {
             /// 掉落物的烘焙模型会在实体局部继续变换，直接采用其所在位置的彩光。
             long color = LightColorCache.INSTANCE.sample(item.getX(), item.getY() + 0.5, item.getZ());
-            if (color != 0) return new ColoredLightBufferSource(source, color);
+            if (color != 0) return ColoredLightBufferSource.hasTint(color)
+                ? new ColoredLightBufferSource(source, color) : source;
         }
         AABB bounds = entity.getBoundingBox();
         if (!LightColorCache.INSTANCE.hasColorNear(BlockPos.containing(bounds.getCenter()))

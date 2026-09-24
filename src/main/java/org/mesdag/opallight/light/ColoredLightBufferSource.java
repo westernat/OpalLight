@@ -29,25 +29,37 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
         return new ColoredVertexConsumer(delegate.getBuffer(renderType), cameraPos, fixedColor);
     }
 
-    public static VertexConsumer wrap(VertexConsumer output, Vec3 cameraPos) {
-        return new ColoredVertexConsumer(output, cameraPos, 0);
+    public static VertexConsumer wrapFixed(VertexConsumer output, long color) {
+        return hasTint(color) ? new ColoredVertexConsumer(output, null, color) : output;
+    }
+
+    public static boolean hasTint(long color) {
+        long red = color >>> 32 & 65535L;
+        long green = color >>> 16 & 65535L;
+        long blue = color & 65535L;
+        return red != green || green != blue;
     }
 
     private static final class ColoredVertexConsumer implements VertexConsumer {
         private final VertexConsumer output;
         private final @Nullable Vec3 cameraPos;
-        private final long fixedColor;
         private float red = 1.0F, green = 1.0F, blue = 1.0F;
 
         private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor) {
             this.output = output;
             this.cameraPos = cameraPos;
-            this.fixedColor = fixedColor;
+            if (cameraPos == null) updateColor(fixedColor);
         }
 
         @Override
         public VertexConsumer addVertex(float x, float y, float z) {
-            long color = cameraPos == null ? fixedColor : LightColorCache.INSTANCE.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z);
+            if (cameraPos != null)
+                updateColor(LightColorCache.INSTANCE.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z));
+            output.addVertex(x, y, z);
+            return this;
+        }
+
+        private void updateColor(long color) {
             float r = LightColorCache.channel(color, 32);
             float g = LightColorCache.channel(color, 16);
             float b = LightColorCache.channel(color, 0);
@@ -55,8 +67,6 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
             red = 1.0F - 0.35F * (strength - r);
             green = 1.0F - 0.35F * (strength - g);
             blue = 1.0F - 0.35F * (strength - b);
-            output.addVertex(x, y, z);
-            return this;
         }
 
         @Override

@@ -23,6 +23,11 @@ final class LightMaskMeshParts {
         return rebuild == null ? LongSets.emptySet() : new LongOpenHashSet(rebuild);
     }
 
+    boolean hasChangedBlocks(long key) {
+        LongOpenHashSet rebuild = rebuildBlocks.get(key);
+        return rebuild != null && !rebuild.isEmpty();
+    }
+
     boolean hasCachedGeometryNear(long key, int x, int y, int z) {
         var geometry = geometryCache.get(key);
         if (geometry == null) return false;

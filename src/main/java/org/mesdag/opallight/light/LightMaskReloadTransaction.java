@@ -34,12 +34,16 @@ final class LightMaskReloadTransaction implements AutoCloseable {
     }
 
     void discardChunk(int minGX, int maxGX, int minGZ, int maxGZ) {
-        LongOpenHashSet discard = new LongOpenHashSet();
-        for (long key : ready.keySet()) {
+        var iterator = ready.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            long key = entry.getLongKey();
             if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
-                    && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) discard.add(key);
+                && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) {
+                if (entry.getValue().buffer() != null) entry.getValue().buffer().close();
+                iterator.remove();
+            }
         }
-        for (long key : discard) invalidate(key);
     }
 
     void commit(Long2ObjectOpenHashMap<VertexBuffer> buffers, Long2ObjectOpenHashMap<AABB> bounds, LightMaskMeshParts parts) {

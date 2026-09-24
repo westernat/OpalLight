@@ -27,7 +27,9 @@ final class LightMaskRenderer {
 
     private static TerrainFog terrainFog;
     private static VertexBuffer[] drawBuffers = new VertexBuffer[0];
+    private static VertexBuffer[] previousBuffers = new VertexBuffer[0];
     private static float[] drawOffsets = new float[0];
+    private static float[] transitionWeights = new float[0];
 
     static void captureTerrainFog() {
         float[] color = RenderSystem.getShaderFogColor();
@@ -54,14 +56,15 @@ final class LightMaskRenderer {
     }
 
     static void draw(Matrix4f viewMatrix, Camera camera, ShaderInstance lightMaskShader, LongArrayList visibleGroups,
-                     Long2ObjectOpenHashMap<VertexBuffer> buffers) {
+                     Long2ObjectOpenHashMap<VertexBuffer> buffers,
+                     Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
         if (visibleGroups.isEmpty()) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
         lightMaskShader.setSampler("Sampler0", minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
         Vec3 pos = camera.getPosition();
-        prepareDraws(pos, visibleGroups, buffers);
+        prepareDraws(pos, visibleGroups, buffers, transitions);
         lightMaskShader.MODEL_VIEW_MATRIX.set(viewMatrix);
         lightMaskShader.PROJECTION_MATRIX.set(RenderSystem.getProjectionMatrix());
         lightMaskShader.apply();
@@ -79,6 +82,8 @@ final class LightMaskRenderer {
         }
         Uniform groupOffset = lightMaskShader.getUniform("GroupOffset");
         if (groupOffset == null) throw new IllegalStateException("Missing colored light group offset uniform");
+        Uniform transitionWeight = lightMaskShader.getUniform("TransitionWeight");
+        if (transitionWeight == null) throw new IllegalStateException("Missing colored light transition uniform");
         try {
             GlStateManager._polygonOffset(-1.0F, -1.0F);
             GlStateManager._enablePolygonOffset();
@@ -87,14 +92,14 @@ final class LightMaskRenderer {
             GlStateManager._depthMask(true);
             GlStateManager._depthFunc(GL11.GL_LEQUAL);
             GlStateManager._colorMask(false, false, false, false);
-            drawVisibleBuffers(groupOffset, visibleGroups.size());
+            drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), false);
             GlStateManager._colorMask(true, true, true, true);
             GlStateManager._depthMask(false);
             GlStateManager._depthFunc(GL11.GL_EQUAL);
             GlStateManager._enableBlend();
             /// 增量来自模型纹理，避免把已雾化的目标颜色再次增亮。
             GlStateManager._blendFunc(GL11.GL_ONE, GL11.GL_ONE);
-            drawVisibleBuffers(groupOffset, visibleGroups.size());
+            drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), true);
         } finally {
             GlStateManager._colorMask(true, true, true, true);
             GlStateManager._blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO);
@@ -106,30 +111,58 @@ final class LightMaskRenderer {
             lightMaskShader.clear();
             VertexBuffer.unbind();
             java.util.Arrays.fill(drawBuffers, 0, visibleGroups.size(), null);
+            java.util.Arrays.fill(previousBuffers, 0, visibleGroups.size(), null);
         }
     }
 
     private static void prepareDraws(Vec3 cameraPos, LongArrayList visibleGroups,
-                                     Long2ObjectOpenHashMap<VertexBuffer> buffers) {
+                                     Long2ObjectOpenHashMap<VertexBuffer> buffers,
+                                     Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
         if (drawBuffers.length < visibleGroups.size()) {
             int capacity = Math.max(visibleGroups.size(), drawBuffers.length * 2);
             drawBuffers = new VertexBuffer[capacity];
+            previousBuffers = new VertexBuffer[capacity];
             drawOffsets = new float[capacity * 3];
+            transitionWeights = new float[capacity];
         }
+        long now = System.nanoTime();
         for (int i = 0; i < visibleGroups.size(); i++) {
             long key = visibleGroups.getLong(i);
             drawBuffers[i] = buffers.get(key);
+            var transition = transitions.get(key);
+            previousBuffers[i] = transition == null ? null : transition.previous();
+            transitionWeights[i] = transition == null ? 1.0F
+                : Math.min(1.0F, (float) (now - transition.startedAt()) / LightMaskMeshCache.DYNAMIC_TRANSITION_NANOS);
             drawOffsets[i * 3] = (float) ((SectionPos.x(key) << GROUP_XZ_BLOCK_SHIFT) - cameraPos.x);
             drawOffsets[i * 3 + 1] = (float) ((SectionPos.y(key) << GROUP_Y_BLOCK_SHIFT) - cameraPos.y);
             drawOffsets[i * 3 + 2] = (float) ((SectionPos.z(key) << GROUP_XZ_BLOCK_SHIFT) - cameraPos.z);
         }
     }
 
-    private static void drawVisibleBuffers(Uniform groupOffset, int count) {
+    private static void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, int count, boolean colorPass) {
         /// 两遍复用同一份缓冲引用和相机相对坐标。
+        float uploadedWeight = Float.NaN;
         for (int i = 0; i < count; i++) {
             groupOffset.set(drawOffsets[i * 3], drawOffsets[i * 3 + 1], drawOffsets[i * 3 + 2]);
             groupOffset.upload();
+            if (previousBuffers[i] != null) {
+                if (colorPass) {
+                    float weight = 1.0F - transitionWeights[i];
+                    transitionWeight.set(weight);
+                    transitionWeight.upload();
+                    uploadedWeight = weight;
+                }
+                previousBuffers[i].bind();
+                previousBuffers[i].draw();
+            }
+            if (colorPass) {
+                float weight = transitionWeights[i];
+                if (uploadedWeight != weight) {
+                    transitionWeight.set(weight);
+                    transitionWeight.upload();
+                    uploadedWeight = weight;
+                }
+            }
             VertexBuffer buffer = drawBuffers[i];
             buffer.bind();
             buffer.draw();

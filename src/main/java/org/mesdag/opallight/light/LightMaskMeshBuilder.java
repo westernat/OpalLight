@@ -1,11 +1,11 @@
 package org.mesdag.opallight.light;
 
 import com.mojang.blaze3d.vertex.*;
+import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
-import it.unimi.dsi.fastutil.floats.FloatArrayList;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -25,10 +25,10 @@ import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Map;
-import java.util.BitSet;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
@@ -39,6 +39,7 @@ final class LightMaskMeshBuilder {
     private static final int VERTEX_FLOATS = 10;
     private static final int OUTPUT_VERTEX_BYTES = DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize();
     private static final int QUAD_FLOATS = VERTEX_FLOATS * 4;
+    private static final byte[] EMPTY_VERTICES = new byte[0];
     private static final ThreadLocal<LightMeshColorGrid> colorScratch =
             ThreadLocal.withInitial(() -> new LightMeshColorGrid(0));
     record MeshSnapshot(long key, long epoch, int sectionX, int sectionZ,
@@ -150,6 +151,7 @@ final class LightMaskMeshBuilder {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         float[] sampled = new float[3];
         float[] output = new float[16];
+        EncodingScratch encoded = new EncodingScratch();
         int minX = SectionPos.x(snapshot.key()) << GROUP_XZ_BLOCK_SHIFT;
         int minY = SectionPos.y(snapshot.key()) << GROUP_Y_BLOCK_SHIFT;
         int minZ = SectionPos.z(snapshot.key()) << GROUP_XZ_BLOCK_SHIFT;
@@ -188,7 +190,7 @@ final class LightMaskMeshBuilder {
                     }
                     blockGeometry = consumer.vertices();
                 }
-                byte[] vertices = colorize(blockGeometry, colors, sampled, output, packed, minX, minY, minZ);
+                byte[] vertices = colorize(blockGeometry, colors, sampled, output, encoded, packed, minX, minY, minZ);
                 if (vertices.length != 0) {
                     vertexCount += appendVertices(memory, vertices);
                     geometry.put(packed, new BlockMesh(blockGeometry, vertices));
@@ -238,10 +240,10 @@ final class LightMaskMeshBuilder {
     }
 
     private static byte[] colorize(float[] vertices, LightMeshColorGrid colors,
-                                     float[] sampled, float[] output, long packed, int originX, int originY, int originZ) {
+                                   float[] sampled, float[] output, EncodingScratch scratch,
+                                   long packed, int originX, int originY, int originZ) {
         int blockX = BlockPos.getX(packed), blockY = BlockPos.getY(packed), blockZ = BlockPos.getZ(packed);
-        java.nio.ByteBuffer encoded = java.nio.ByteBuffer.allocate(vertices.length / VERTEX_FLOATS * OUTPUT_VERTEX_BYTES)
-                .order(java.nio.ByteOrder.nativeOrder());
+        java.nio.ByteBuffer encoded = scratch.acquire(vertices.length / VERTEX_FLOATS * OUTPUT_VERTEX_BYTES);
         for (int quad = 0; quad < vertices.length; quad += QUAD_FLOATS) {
             boolean lit = false;
             for (int vertex = 0; vertex < 4; vertex++) {
@@ -272,8 +274,20 @@ final class LightMaskMeshBuilder {
                 }
             }
         }
-        return encoded.position() == encoded.capacity() ? encoded.array()
+        return encoded.position() == 0 ? EMPTY_VERTICES
                 : java.util.Arrays.copyOf(encoded.array(), encoded.position());
+    }
+
+    /// 一次网格构建复用编码缓冲，未受光方块不再各自分配临时数组。
+    private static final class EncodingScratch {
+        private java.nio.ByteBuffer data = java.nio.ByteBuffer.allocate(0).order(java.nio.ByteOrder.nativeOrder());
+
+        java.nio.ByteBuffer acquire(int bytes) {
+            if (data.capacity() < bytes)
+                data = java.nio.ByteBuffer.allocate(bytes).order(java.nio.ByteOrder.nativeOrder());
+            data.clear();
+            return data;
+        }
     }
 
     private static int appendVertices(ByteBufferBuilder memory, byte[] vertices) {

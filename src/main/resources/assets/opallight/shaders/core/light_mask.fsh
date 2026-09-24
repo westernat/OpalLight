@@ -6,6 +6,7 @@ uniform sampler2D Sampler0;
 uniform float FogStart;
 uniform float FogEnd;
 uniform vec4 FogColor;
+uniform float TransitionWeight;
 
 in vec4 vertexColor;
 in vec2 texCoord0;
@@ -18,5 +19,5 @@ void main() {
     if (fogFade <= 0.0) discard;
     vec4 texColor = texture(Sampler0, texCoord0);
     if (texColor.a < 0.1) discard;
-    fragColor = vec4(texColor.rgb * vertexColor.rgb * vertexColor.a * texColor.a * fogFade, 1.0);
+fragColor = vec4(texColor.rgb * vertexColor.rgb * vertexColor.a * texColor.a * fogFade * TransitionWeight, 1.0);
 }

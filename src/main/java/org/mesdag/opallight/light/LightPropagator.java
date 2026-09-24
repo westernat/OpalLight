@@ -1,21 +1,24 @@
 package org.mesdag.opallight.light;
 
-import it.unimi.dsi.fastutil.objects.ObjectIntPair;
+import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import net.minecraft.core.BlockPos;
+import it.unimi.dsi.fastutil.objects.ObjectIntPair;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.List;
+import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -347,8 +350,9 @@ public final class LightPropagator {
         Long2LongOpenHashMap versions = new Long2LongOpenHashMap();
         int centerX = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockX() >> 4;
         int centerZ = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockZ() >> 4;
-        LongArrayList nearest = new LongArrayList(pendingChunks);
         boolean dynamicBatch = !dynamicPendingChunks.isEmpty();
+        /// 动态光仅排序自己的待处理区块，避免在世界加载期间反复排序静态积压任务。
+        LongArrayList nearest = new LongArrayList(dynamicBatch ? dynamicPendingChunks : pendingChunks);
         if (dynamicBatch) firstMeshPending = false;
         nearest.sort((a, b) -> {
             long ax = (long) ChunkPos.getX(a) - centerX, az = (long) ChunkPos.getZ(a) - centerZ;
@@ -364,7 +368,6 @@ public final class LightPropagator {
         int groupSize = 1 << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
         for (int i = 0; i < nearest.size() && versions.size() < ASYNC_BATCH_CHUNKS; i++) {
             long key = nearest.getLong(i);
-            if (dynamicBatch && !dynamicPendingChunks.contains(key)) continue;
             int cx = ChunkPos.getX(key), cz = ChunkPos.getZ(key);
             if (firstMeshPending && anchored && (cx < groupX - 1 || cx > groupX + groupSize
                     || cz < groupZ - 1 || cz > groupZ + groupSize)) continue;

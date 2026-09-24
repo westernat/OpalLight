@@ -1,18 +1,13 @@
 package org.mesdag.opallight.light;
 
 import com.mojang.blaze3d.vertex.VertexBuffer;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongArrayList;
-import it.unimi.dsi.fastutil.longs.LongIterator;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.longs.*;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.chunk.RenderRegionCache;
+import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
@@ -24,21 +19,28 @@ import org.joml.Matrix4f;
 
 import java.util.Iterator;
 import java.util.OptionalLong;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongPredicate;
 
 import static org.mesdag.opallight.light.LightMeshLayout.*;
 
 public final class LightMaskMeshCache {
     private static final Long2ObjectOpenHashMap<VertexBuffer> buffers = new Long2ObjectOpenHashMap<>();
+    static final long DYNAMIC_TRANSITION_NANOS = 70_000_000L;
+
+    record Transition(VertexBuffer previous, long startedAt) {
+    }
+
+    private static final Long2ObjectOpenHashMap<Transition> transitions = new Long2ObjectOpenHashMap<>();
     private static final Long2ObjectOpenHashMap<AABB> bounds = new Long2ObjectOpenHashMap<>();
     private static final LongOpenHashSet dirtyGroups = new LongOpenHashSet();
     private static final LongOpenHashSet urgentGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet dynamicPriorityGroups = new LongOpenHashSet();
     private static final LongOpenHashSet colorDirtyGroups = new LongOpenHashSet();
     private static final LongOpenHashSet batchedDirtyGroups = new LongOpenHashSet();
     private static boolean batchingDirty;
@@ -138,7 +140,8 @@ public final class LightMaskMeshCache {
                 for (int gz = (minZ - 1) >> GROUP_XZ_BLOCK_SHIFT; gz <= (maxZ + 1) >> GROUP_XZ_BLOCK_SHIFT; gz++) {
                     long key = SectionPos.asLong(gx, gy, gz);
                     dirty(key);
-                    if (immediate && reloadTransaction == null && buffers.containsKey(key)) urgentGroups.add(key);
+                    /// 动态颜色优先异步重建，避免在渲染线程同步烘焙整组模型。
+                    if (immediate && reloadTransaction == null) dynamicPriorityGroups.add(key);
                 }
             }
         }
@@ -158,6 +161,7 @@ public final class LightMaskMeshCache {
             if (SectionPos.x(key) < minGX || SectionPos.x(key) > maxGX
                     || SectionPos.z(key) < minGZ || SectionPos.z(key) > maxGZ) continue;
             entry.getValue().close();
+            closeTransition(key);
             iterator.remove();
             bounds.remove(key);
             parts.remove(key);
@@ -202,6 +206,7 @@ public final class LightMaskMeshCache {
         if (level == null) return;
         processAsync(level, frustum, !reloadInProgress, propagationPending);
         if (reloadTransaction != null && !reloadInProgress && !hasVisiblePending(frustum)) commitDefinitionReload();
+        expireTransitions();
         if (buffers.isEmpty()) return;
         visibleGroups.clear();
         Vec3 cameraPos = camera.getPosition();
@@ -219,7 +224,25 @@ public final class LightMaskMeshCache {
             }
             visibleGroups.add(key);
         }
-        LightMaskRenderer.draw(viewMatrix, camera, shader, visibleGroups, buffers);
+        LightMaskRenderer.draw(viewMatrix, camera, shader, visibleGroups, buffers, transitions);
+    }
+
+    private static void expireTransitions() {
+        if (transitions.isEmpty()) return;
+        long now = System.nanoTime();
+        var iterator = transitions.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            if (now - entry.getValue().startedAt() < DYNAMIC_TRANSITION_NANOS
+                && buffers.containsKey(entry.getLongKey())) continue;
+            entry.getValue().previous().close();
+            iterator.remove();
+        }
+    }
+
+    private static void closeTransition(long key) {
+        Transition transition = transitions.remove(key);
+        if (transition != null) transition.previous().close();
     }
 
     private static boolean hasVisiblePending(@Nullable Frustum frustum) {
@@ -306,13 +329,16 @@ public final class LightMaskMeshCache {
 
         if (!schedule) return;
         for (int available = 2 - inFlight.size(); available > 0; available--) {
-            if (!scheduleNext(level, frustum, dirtyGroups.iterator(), regions, propagationPending)) break;
+            if (scheduleNext(level, frustum, dynamicPriorityGroups.iterator(), regions, propagationPending, true))
+                continue;
+            if (!scheduleNext(level, frustum, dirtyGroups.iterator(), regions, propagationPending, false)) break;
         }
     }
 
     private static void applyMesh(long key, @Nullable LightMaskMeshBuilder.BuiltMesh mesh, boolean stageReload) {
         VertexBuffer oldBuffer = buffers.get(key);
         if (mesh == null) {
+            closeTransition(key);
             if (stageReload && reloadTransaction != null) {
                 reloadTransaction.stage(key, null, null);
             } else {
@@ -325,6 +351,7 @@ public final class LightMaskMeshCache {
             }
             dirtyGroups.remove(key);
             colorDirtyGroups.remove(key);
+            dynamicPriorityGroups.remove(key);
             return;
         }
         VertexBuffer replacement = new VertexBuffer(VertexBuffer.Usage.STATIC);
@@ -335,12 +362,19 @@ public final class LightMaskMeshCache {
             if (stageReload && reloadTransaction != null) {
                 reloadTransaction.stage(key, replacement, mesh.geometry());
             } else {
+                boolean smooth = stageReload && dynamicPriorityGroups.contains(key) && oldBuffer != null
+                    && !parts.hasChangedBlocks(key);
+                closeTransition(key);
                 buffers.put(key, replacement);
-                if (oldBuffer != null) oldBuffer.close();
+                if (oldBuffer != null) {
+                    if (smooth) transitions.put(key, new Transition(oldBuffer, System.nanoTime()));
+                    else oldBuffer.close();
+                }
                 parts.replace(key, mesh.geometry());
             }
             dirtyGroups.remove(key);
             colorDirtyGroups.remove(key);
+            dynamicPriorityGroups.remove(key);
         } catch (Throwable error) {
             replacement.close();
             VertexBuffer.unbind();
@@ -376,12 +410,14 @@ public final class LightMaskMeshCache {
     }
 
     private static boolean scheduleNext(ClientLevel level, @Nullable Frustum frustum, LongIterator iterator,
-                                        RenderRegionCache regions, LongPredicate propagationPending) {
+                                        RenderRegionCache regions, LongPredicate propagationPending,
+                                        boolean dynamicPriority) {
         while (iterator.hasNext()) {
             long key = iterator.nextLong();
+            if (!dirtyGroups.contains(key)) continue;
             if (inFlight.containsKey(key)) continue;
             if (failedGroups.contains(key)) continue;
-            if (propagationPending.test(key)) continue;
+            if (!dynamicPriority && propagationPending.test(key)) continue;
             AABB box = bounds.computeIfAbsent(key, LightMaskMeshCache::groupBounds);
             if (frustum != null && !frustum.isVisible(box)) continue;
             try {
@@ -443,6 +479,9 @@ public final class LightMaskMeshCache {
         for (AtomicBoolean cancellation : inFlight.values()) cancellation.set(true);
         inFlight.clear();
         urgentGroups.clear();
+        dynamicPriorityGroups.clear();
+        for (Transition transition : transitions.values()) transition.previous().close();
+        transitions.clear();
         groupVersions.clear();
         failedGroups.clear();
         MeshResult result;
