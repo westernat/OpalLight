@@ -5,11 +5,9 @@ import com.mojang.serialization.JsonOps;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.advancements.critereon.StatePropertiesPredicate;
 import net.minecraft.core.HolderLookup;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.data.CachedOutput;
 import net.minecraft.data.DataProvider;
 import net.minecraft.data.PackOutput;
-import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.Block;
 import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.OpalLight;
@@ -35,11 +33,7 @@ public class OpalDataProvider implements DataProvider {
         this.modid = modid;
     }
 
-    public void gather() {
-        for (DyeColor color : OpalLight.COLORS) {
-            add(BuiltInRegistries.BLOCK.get(OpalLight.asResource(color.getName() + "_lantern")), color.getTextColor());
-        }
-    }
+    public void gather() {}
 
     public void add(Block block, OpalColor color, @Nullable StatePropertiesPredicate predicate) {
         map.computeIfAbsent(block, b -> new ArrayList<>()).add(new LightDataLoader.OpalData(color, Optional.ofNullable(predicate)));
