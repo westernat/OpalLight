@@ -1,10 +1,6 @@
 package org.mesdag.opallight.light;
 
-import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.*;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
@@ -65,6 +61,8 @@ final class LightPropagationSolver {
             }
             int radius = source.emission() - 1;
             int sourceX = BlockPos.getX(source.pos()), sourceZ = BlockPos.getZ(source.pos());
+            var cycle = source.profile().cycle();
+            OpalColor sourceColor = cycle == null ? source.profile().color() : cycleColor(cycle, input.gameTime());
             boolean trim = sourceX - radius < minX || sourceX + radius > maxX
                     || sourceZ - radius < minZ || sourceZ + radius > maxZ;
             /// 高位标记当前光源，低位保存亮度；避免为封闭光源也清空整块数组。
@@ -76,9 +74,9 @@ final class LightPropagationSolver {
             for (int lightLevel = source.emission(); lightLevel >= 1; lightLevel--) {
                 LongArrayFIFOQueue queue = queues[lightLevel];
                 float factor = (float) lightLevel / source.emission();
-                float red = source.color().r() * factor;
-                float green = source.color().g() * factor;
-                float blue = source.color().b() * factor;
+                float solidRed = sourceColor.r() * factor;
+                float solidGreen = sourceColor.g() * factor;
+                float solidBlue = sourceColor.b() * factor;
                 while (!queue.isEmpty()) {
                     long pos = queue.dequeueLong();
                     int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
@@ -95,7 +93,10 @@ final class LightPropagationSolver {
                         if (input.targetsSection(sectionKey)) {
                             var section = accumulated.computeIfAbsent(sectionKey, unused -> new AccumulatedSection());
                             int index = (x & 15) | (z & 15) << 4 | (y & 15) << 8;
-                            section.colors[index] = LightColorCache.addPacked(section.colors[index], red, green, blue);
+                            int offset = index * 3;
+                            section.colors[offset] += solidRed;
+                            section.colors[offset + 1] += solidGreen;
+                            section.colors[offset + 2] += solidBlue;
                             section.occupied.set(index);
                         }
                     }
@@ -155,7 +156,9 @@ final class LightPropagationSolver {
             Long2LongOpenHashMap values = new Long2LongOpenHashMap(section.occupied.cardinality());
             int sx = SectionPos.x(key) << 4, sy = SectionPos.y(key) << 4, sz = SectionPos.z(key) << 4;
             for (int i = section.occupied.nextSetBit(0); i >= 0; i = section.occupied.nextSetBit(i + 1)) {
-                values.put(BlockPos.asLong(sx + (i & 15), sy + (i >> 8), sz + (i >> 4 & 15)), section.colors[i]);
+                int offset = i * 3;
+                values.put(BlockPos.asLong(sx + (i & 15), sy + (i >> 8), sz + (i >> 4 & 15)),
+                    LightColorCache.toneMapped(section.colors[offset], section.colors[offset + 1], section.colors[offset + 2]));
             }
             output.put(key, values);
         }
@@ -165,11 +168,23 @@ final class LightPropagationSolver {
 
     /// 传播期间按分段局部坐标累加，完成后一次生成稀疏结果，避免每个光源重复哈希同一体素。
     private static final class AccumulatedSection {
-        final long[] colors = new long[4096];
+        final float[] colors = new float[4096 * 3];
         final BitSet occupied = new BitSet(4096);
     }
 
     private static int localIndex(int x, int y, int z, int mask, int bits) {
         return (x & mask) | (z & mask) << bits | (y & mask) << (bits * 2);
+    }
+
+    static OpalColor cycleColor(LightDataLoader.CyclePattern pattern, long gameTime) {
+        double position = (double) Math.floorMod(gameTime, pattern.periodTicks())
+            / pattern.periodTicks() * pattern.colors().size();
+        int first = (int) position;
+        float fraction = (float) (position - first);
+        OpalColor a = pattern.colors().get(first);
+        OpalColor b = pattern.colors().get((first + 1) % pattern.colors().size());
+        return OpalColor.of(a.r() + (b.r() - a.r()) * fraction,
+            a.g() + (b.g() - a.g()) * fraction,
+            a.b() + (b.b() - a.b()) * fraction);
     }
 }

@@ -33,6 +33,7 @@ public final class LightManager {
         if (level == null) return;
         updateShaderPackMode();
         DynamicLightSources.update(level);
+        LightPropagator.scheduleCyclingSources(level);
         updateLighting(level);
     }
 

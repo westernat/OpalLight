@@ -26,7 +26,9 @@ import java.util.function.Supplier;
 
 public final class LightPropagator {
     record Commit(List<LightColorCache.SectionUpdate> updates, boolean dynamic) {}
-    private static final Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<ObjectIntPair<OpalColor>>> sourcesByChunk = new Long2ObjectOpenHashMap<>();
+
+    private static final Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>>> sourcesByChunk = new Long2ObjectOpenHashMap<>();
+    private static final Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> cyclingStaticSources = new Long2ObjectOpenHashMap<>();
     private static final Long2ObjectOpenHashMap<LongOpenHashSet> emittersByChunk = new Long2ObjectOpenHashMap<>();
     private static final Int2ObjectOpenHashMap<LightSource> dynamicSources = new Int2ObjectOpenHashMap<>();
     private static final Long2ObjectOpenHashMap<List<LightSource>> dynamicByChunk = new Long2ObjectOpenHashMap<>();
@@ -49,6 +51,7 @@ public final class LightPropagator {
     private record ActiveBatch(Level level, Long2LongOpenHashMap versions, LightPropagationSnapshot snapshot,
                                CompletableFuture<LightPropagationSolver.Result> future, boolean dynamic) {}
     private static ActiveBatch activeBatch;
+    private static long lastCycleTick = Long.MIN_VALUE;
 
     public static boolean isNearAffectedSection(long sectionPos) {
         int sx = SectionPos.x(sectionPos), sy = SectionPos.y(sectionPos), sz = SectionPos.z(sectionPos);
@@ -74,6 +77,7 @@ public final class LightPropagator {
     public static void clearAllSources() {
         if (activeBatch != null) activeBatch.snapshot().cancel();
         sourcesByChunk.clear();
+        cyclingStaticSources.clear();
         emittersByChunk.clear();
         dynamicSources.clear();
         dynamicByChunk.clear();
@@ -82,30 +86,43 @@ public final class LightPropagator {
         pendingSections.clear();
         chunkVersions.clear();
         activeBatch = null;
+        lastCycleTick = Long.MIN_VALUE;
     }
 
     public static void indexChunk(Level level, ChunkPos cp) {
+        long chunkKey = ChunkPos.asLong(cp.x, cp.z);
+        removeCyclingChunk(chunkKey);
         var chunk = level.getChunkSource().getChunkForLighting(cp.x, cp.z);
         if (chunk == null) {
-            sourcesByChunk.remove(ChunkPos.asLong(cp.x, cp.z));
-            emittersByChunk.remove(ChunkPos.asLong(cp.x, cp.z));
+            sourcesByChunk.remove(chunkKey);
+            emittersByChunk.remove(chunkKey);
             return;
         }
-        Long2ObjectOpenHashMap<ObjectIntPair<OpalColor>> sources = new Long2ObjectOpenHashMap<>();
+        Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> sources = new Long2ObjectOpenHashMap<>();
         LongOpenHashSet emitters = new LongOpenHashSet();
         chunk.findBlockLightSources((pos, state) -> {
             emitters.add(pos.asLong());
-            ObjectIntPair<OpalColor> color = LightSourceDefinitions.colorWithEmissive(level, pos, state);
+            ObjectIntPair<LightProfile> color = LightSourceDefinitions.colorWithEmissive(level, pos, state);
             if (color != null) sources.put(pos.asLong(), color);
         });
-        long chunkKey = ChunkPos.asLong(cp.x, cp.z);
         sourcesByChunk.put(chunkKey, sources);
         emittersByChunk.put(chunkKey, emitters);
+        for (var entry : sources.long2ObjectEntrySet()) {
+            if (entry.getValue().left().animated()) cyclingStaticSources.put(entry.getLongKey(), entry.getValue());
+        }
     }
 
     public static void forgetChunk(ChunkPos cp) {
-        sourcesByChunk.remove(ChunkPos.asLong(cp.x, cp.z));
-        emittersByChunk.remove(ChunkPos.asLong(cp.x, cp.z));
+        long chunkKey = ChunkPos.asLong(cp.x, cp.z);
+        removeCyclingChunk(chunkKey);
+        sourcesByChunk.remove(chunkKey);
+        emittersByChunk.remove(chunkKey);
+    }
+
+    private static void removeCyclingChunk(long chunkKey) {
+        var old = sourcesByChunk.get(chunkKey);
+        if (old == null) return;
+        for (long pos : old.keySet()) cyclingStaticSources.remove(pos);
     }
 
     /// 动态光源按实体和手槽跟踪；一次替换同时标记旧位置和新位置，避免移动残影。
@@ -164,20 +181,44 @@ public final class LightPropagator {
             LongOpenHashSet emitters = emittersByChunk.get(chunkKey);
             if (emitters != null) emitters.remove(pos.asLong());
         }
-        Long2ObjectOpenHashMap<ObjectIntPair<OpalColor>> sources = sourcesByChunk.get(chunkKey);
-        ObjectIntPair<OpalColor> previous = sources == null ? null : sources.get(pos.asLong());
-        ObjectIntPair<OpalColor> current = LightSourceDefinitions.colorWithEmissive(level, pos, state);
+        Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> sources = sourcesByChunk.get(chunkKey);
+        ObjectIntPair<LightProfile> previous = sources == null ? null : sources.get(pos.asLong());
+        ObjectIntPair<LightProfile> current = LightSourceDefinitions.colorWithEmissive(level, pos, state);
         if (current == null) {
             if (sources != null) sources.remove(pos.asLong());
+            cyclingStaticSources.remove(pos.asLong());
         } else {
             if (sources == null) {
                 sources = new Long2ObjectOpenHashMap<>();
                 sourcesByChunk.put(chunkKey, sources);
             }
             sources.put(pos.asLong(), current);
+            if (current.left().animated()) cyclingStaticSources.put(pos.asLong(), current);
+            else cyclingStaticSources.remove(pos.asLong());
         }
         return previous == null ? current != null
                 : current == null || previous.rightInt() != current.rightInt() || !previous.left().equals(current.left());
+    }
+
+    public static void scheduleCyclingSources(Level level) {
+        long gameTime = level.getGameTime();
+        if (gameTime == lastCycleTick) return;
+        lastCycleTick = gameTime;
+        /// 周期更新不能反复取消尚未完成的传播快照。
+        if (activeBatch != null) return;
+        for (var entry : cyclingStaticSources.long2ObjectEntrySet()) {
+            var pattern = entry.getValue().left().cycle();
+            if (pattern != null && Math.floorMod(gameTime + Long.hashCode(entry.getLongKey()),
+                pattern.updateIntervalTicks()) == 0) {
+                scheduleAround(BlockPos.of(entry.getLongKey()), entry.getValue().rightInt(), false);
+            }
+        }
+        for (LightSource source : dynamicSources.values()) {
+            var pattern = source.profile().cycle();
+            if (pattern != null && Math.floorMod(gameTime + Long.hashCode(source.pos()), pattern.updateIntervalTicks()) == 0) {
+                scheduleAround(BlockPos.of(source.pos()), source.emission(), true);
+            }
+        }
     }
 
     public static void scheduleAround(BlockPos pos) {
@@ -249,12 +290,12 @@ public final class LightPropagator {
         for (var chunkEntry : emittersByChunk.long2ObjectEntrySet()) {
             long chunkKey = chunkEntry.getLongKey();
             indexedChunks.add(chunkKey);
-            Long2ObjectOpenHashMap<ObjectIntPair<OpalColor>> oldSources = sourcesByChunk.get(chunkKey);
-            Long2ObjectOpenHashMap<ObjectIntPair<OpalColor>> refreshed = new Long2ObjectOpenHashMap<>();
+            Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> oldSources = sourcesByChunk.get(chunkKey);
+            Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> refreshed = new Long2ObjectOpenHashMap<>();
             for (long packedPos : chunkEntry.getValue()) {
                 BlockPos pos = BlockPos.of(packedPos);
-                ObjectIntPair<OpalColor> current = LightSourceDefinitions.colorWithEmissive(level, pos, level.getBlockState(pos));
-                ObjectIntPair<OpalColor> previous = oldSources == null ? null : oldSources.get(packedPos);
+                ObjectIntPair<LightProfile> current = LightSourceDefinitions.colorWithEmissive(level, pos, level.getBlockState(pos));
+                ObjectIntPair<LightProfile> previous = oldSources == null ? null : oldSources.get(packedPos);
                 if (current != null) refreshed.put(packedPos, current);
                 if (!sameSource(previous, current)) {
                     scheduleAround(pos);
@@ -280,10 +321,16 @@ public final class LightPropagator {
             staleChunks.add(chunkEntry.getLongKey());
         }
         for (long chunkKey : staleChunks) sourcesByChunk.remove(chunkKey);
+        cyclingStaticSources.clear();
+        for (var sources : sourcesByChunk.values()) {
+            for (var entry : sources.long2ObjectEntrySet()) {
+                if (entry.getValue().left().animated()) cyclingStaticSources.put(entry.getLongKey(), entry.getValue());
+            }
+        }
         return changed;
     }
 
-    private static boolean sameSource(ObjectIntPair<OpalColor> previous, ObjectIntPair<OpalColor> current) {
+    private static boolean sameSource(ObjectIntPair<LightProfile> previous, ObjectIntPair<LightProfile> current) {
         return previous == null ? current == null : current != null && previous.rightInt() == current.rightInt() && previous.left().equals(current.left());
     }
 

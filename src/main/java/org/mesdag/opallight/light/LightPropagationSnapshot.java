@@ -1,8 +1,8 @@
 package org.mesdag.opallight.light;
 
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.BlockGetter;
@@ -41,6 +41,7 @@ final class LightPropagationSnapshot implements BlockGetter {
     private volatile LongOpenHashSet remainingTargets;
     private final Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections;
     private final List<LightSource> sources;
+    private final long gameTime;
     private final Long2ObjectOpenHashMap<Long2LongOpenHashMap> previousColors;
     private final int minBuildHeight;
     private final int height;
@@ -50,12 +51,13 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     private LightPropagationSnapshot(Long2ObjectOpenHashMap<ChunkSections> chunks, LongOpenHashSet targets,
                                      Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
-                                     List<LightSource> sources, int minBuildHeight, int height, boolean unsupported) {
+                                     List<LightSource> sources, int minBuildHeight, int height, long gameTime, boolean unsupported) {
         this.chunks = chunks;
         this.targets = targets;
         this.remainingTargets = targets;
         this.restrictedSections = restrictedSections;
         this.sources = sources;
+        this.gameTime = gameTime;
         this.minBuildHeight = minBuildHeight;
         this.height = height;
         this.minSection = SectionPos.blockToSectionCoord(minBuildHeight);
@@ -93,7 +95,7 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     static LightPropagationSnapshot capture(Level level, LongOpenHashSet requested,
             Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
-            Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<OpalColor>>> indexedSources,
+                                            Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<LightProfile>>> indexedSources,
             Long2ObjectOpenHashMap<List<LightSource>> dynamicSources) {
         LongOpenHashSet targets = new LongOpenHashSet(requested);
         LongOpenHashSet scanned = new LongOpenHashSet();
@@ -149,7 +151,7 @@ final class LightPropagationSnapshot implements BlockGetter {
             }
         }
         return new LightPropagationSnapshot(chunks, targets,
-                restrictedSections, sources, level.getMinBuildHeight(), level.getHeight(), unsupported);
+            restrictedSections, sources, level.getMinBuildHeight(), level.getHeight(), level.getGameTime(), unsupported);
     }
 
     private static void includeSourceSections(long pos, int emission, int minHeight, int maxHeight,
@@ -213,6 +215,10 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     List<LightSource> sources() {
         return sources;
+    }
+
+    long gameTime() {
+        return gameTime;
     }
 
     int minBuildHeight() {

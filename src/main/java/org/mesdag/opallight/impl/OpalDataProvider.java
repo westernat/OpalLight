@@ -9,6 +9,7 @@ import net.minecraft.data.CachedOutput;
 import net.minecraft.data.DataProvider;
 import net.minecraft.data.PackOutput;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.OpalLight;
 import org.mesdag.opallight.light.LightDataLoader;
@@ -33,7 +34,15 @@ public class OpalDataProvider implements DataProvider {
         this.modid = modid;
     }
 
-    public void gather() {}
+    public void gather() {
+        addCycle(Blocks.END_ROD);
+    }
+
+    public void addCycle(Block block) {
+        var pattern = new LightDataLoader.CyclePattern(LightDataLoader.CyclePattern.DEFAULT_COLORS, 120, 2);
+        map.computeIfAbsent(block, unused -> new ArrayList<>())
+            .add(LightDataLoader.OpalData.cycle(pattern, Optional.empty()));
+    }
 
     public void add(Block block, OpalColor color, @Nullable StatePropertiesPredicate predicate) {
         map.computeIfAbsent(block, b -> new ArrayList<>()).add(new LightDataLoader.OpalData(color, Optional.ofNullable(predicate)));
