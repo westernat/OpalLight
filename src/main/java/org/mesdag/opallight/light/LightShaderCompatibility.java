@@ -6,6 +6,7 @@ import java.lang.reflect.Method;
 final class LightShaderCompatibility {
     private static final Object irisApi;
     private static final Method shaderPackInUse;
+    private static boolean failed;
 
     static {
         Object api = null;
@@ -16,6 +17,7 @@ final class LightShaderCompatibility {
             method = type.getMethod("isShaderPackInUse");
         } catch (ReflectiveOperationException | LinkageError ignored) {
             // 没有安装 Iris 时仍使用完整的彩光遮罩。
+            failed = true;
         }
         irisApi = api;
         shaderPackInUse = method;
@@ -24,10 +26,11 @@ final class LightShaderCompatibility {
     private LightShaderCompatibility() {}
 
     static boolean isShaderPackInUse() {
-        if (irisApi == null || shaderPackInUse == null) return false;
+        if (irisApi == null || shaderPackInUse == null || failed) return false;
         try {
             return (boolean) shaderPackInUse.invoke(irisApi);
         } catch (ReflectiveOperationException | LinkageError ignored) {
+            failed = true;
             return false;
         }
     }

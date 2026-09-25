@@ -217,7 +217,7 @@ public final class LightMaskMeshCache {
                 continue;
             }
             AABB box = bounds.get(key);
-            if (frustum != null && !frustum.isVisible(box)) continue;
+            if (!frustum.isVisible(box)) continue;
             if (!TerrainSectionVisibility.isVisible(box)) continue;
             if (LightMaskRenderer.isFullyFogged(box, cameraPos)) {
                 continue;
@@ -233,8 +233,7 @@ public final class LightMaskMeshCache {
         var iterator = transitions.long2ObjectEntrySet().iterator();
         while (iterator.hasNext()) {
             var entry = iterator.next();
-            if (now - entry.getValue().startedAt() < DYNAMIC_TRANSITION_NANOS
-                && buffers.containsKey(entry.getLongKey())) continue;
+            if (now - entry.getValue().startedAt() < DYNAMIC_TRANSITION_NANOS && buffers.containsKey(entry.getLongKey())) continue;
             entry.getValue().previous().close();
             iterator.remove();
         }
@@ -276,7 +275,7 @@ public final class LightMaskMeshCache {
         for (long key : dirtyGroups) {
             if (!propagationPending.test(key)) continue;
             AABB box = bounds.computeIfAbsent(key, LightMaskMeshCache::groupBounds);
-            if (frustum != null && !frustum.isVisible(box) || LightMaskRenderer.isFullyFogged(box, camera)) continue;
+            if (!frustum.isVisible(box) || LightMaskRenderer.isFullyFogged(box, camera)) continue;
             double distance = box.getCenter().distanceToSqr(camera);
             if (distance >= nearest) continue;
             int section = level.getSectionIndex(SectionPos.y(key) << GROUP_Y_BLOCK_SHIFT);
@@ -355,7 +354,7 @@ public final class LightMaskMeshCache {
             return;
         }
         VertexBuffer replacement = new VertexBuffer(VertexBuffer.Usage.STATIC);
-        try {
+        try (mesh) {
             replacement.bind();
             replacement.upload(mesh.mesh());
             VertexBuffer.unbind();
@@ -380,8 +379,6 @@ public final class LightMaskMeshCache {
             VertexBuffer.unbind();
             org.mesdag.opallight.OpalLight.LOGGER.error("Failed to upload colored light mesh", error);
             failedGroups.add(key);
-        } finally {
-            mesh.close();
         }
     }
 

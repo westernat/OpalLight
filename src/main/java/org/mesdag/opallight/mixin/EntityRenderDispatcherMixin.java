@@ -16,8 +16,7 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 
 @Mixin(EntityRenderDispatcher.class)
 public abstract class EntityRenderDispatcherMixin {
-    @ModifyArg(method = "render", at = @At(value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/entity/EntityRenderer;render(Lnet/minecraft/world/entity/Entity;FFLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V"), index = 4)
+    @ModifyArg(method = "render", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/entity/EntityRenderer;render(Lnet/minecraft/world/entity/Entity;FFLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;I)V"), index = 4)
     private MultiBufferSource colorEntity(MultiBufferSource source, @Local(argsOnly = true) Entity entity) {
         if (Minecraft.getInstance().level == null || LightColorCache.INSTANCE.isEmpty()) return source;
         if (entity instanceof ItemEntity item) {
