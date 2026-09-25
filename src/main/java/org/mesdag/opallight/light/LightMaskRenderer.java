@@ -68,23 +68,25 @@ final class LightMaskRenderer {
         lightMaskShader.MODEL_VIEW_MATRIX.set(viewMatrix);
         lightMaskShader.PROJECTION_MATRIX.set(RenderSystem.getProjectionMatrix());
         lightMaskShader.apply();
-        TerrainFog fog = terrainFog;
-        if (fog != null) {
-            /// 原版后续渲染阶段可能改写全局雾状态，遮罩始终使用地形雾。
-            lightMaskShader.FOG_START.set(fog.start());
-            lightMaskShader.FOG_END.set(fog.end());
-            lightMaskShader.FOG_COLOR.set(fog.red(), fog.green(), fog.blue(), fog.alpha());
-            lightMaskShader.FOG_SHAPE.set(fog.shape().getIndex());
-            lightMaskShader.FOG_START.upload();
-            lightMaskShader.FOG_END.upload();
-            lightMaskShader.FOG_COLOR.upload();
-            lightMaskShader.FOG_SHAPE.upload();
-        }
-        Uniform groupOffset = lightMaskShader.getUniform("GroupOffset");
-        if (groupOffset == null) throw new IllegalStateException("Missing colored light group offset uniform");
-        Uniform transitionWeight = lightMaskShader.getUniform("TransitionWeight");
-        if (transitionWeight == null) throw new IllegalStateException("Missing colored light transition uniform");
+        /// 光影包启用时 Iris/Oculus 刚在 apply() 末尾锁死深度与颜色写入，先抢回来再摆遮罩自己的状态。
+        boolean reclaimedState = LightShaderCompatibility.reclaimDepthColorState();
         try {
+            TerrainFog fog = terrainFog;
+            if (fog != null) {
+                /// 原版后续渲染阶段可能改写全局雾状态，遮罩始终使用地形雾。
+                lightMaskShader.FOG_START.set(fog.start());
+                lightMaskShader.FOG_END.set(fog.end());
+                lightMaskShader.FOG_COLOR.set(fog.red(), fog.green(), fog.blue(), fog.alpha());
+                lightMaskShader.FOG_SHAPE.set(fog.shape().getIndex());
+                lightMaskShader.FOG_START.upload();
+                lightMaskShader.FOG_END.upload();
+                lightMaskShader.FOG_COLOR.upload();
+                lightMaskShader.FOG_SHAPE.upload();
+            }
+            Uniform groupOffset = lightMaskShader.getUniform("GroupOffset");
+            if (groupOffset == null) throw new IllegalStateException("Missing colored light group offset uniform");
+            Uniform transitionWeight = lightMaskShader.getUniform("TransitionWeight");
+            if (transitionWeight == null) throw new IllegalStateException("Missing colored light transition uniform");
             GlStateManager._polygonOffset(-1.0F, -1.0F);
             GlStateManager._enablePolygonOffset();
             GlStateManager._enableDepthTest();
@@ -108,6 +110,8 @@ final class LightMaskRenderer {
             GlStateManager._depthMask(true);
             GlStateManager._disablePolygonOffset();
             GlStateManager._polygonOffset(0.0F, 0.0F);
+            /// 状态恢复后再重新上锁；随后 clear() 会按光影模组自己的流程解锁并还原状态。
+            LightShaderCompatibility.restoreDepthColorState(reclaimedState);
             lightMaskShader.clear();
             VertexBuffer.unbind();
             java.util.Arrays.fill(drawBuffers, 0, visibleGroups.size(), null);
