@@ -5,7 +5,9 @@
       "conditions": {
         "items": [
           {
-            "items": "minecraft:stone_pickaxe"
+            "items": [
+              "minecraft:stone_pickaxe"
+            ]
           }
         ]
       },
@@ -13,20 +15,21 @@
     },
     "has_the_recipe": {
       "conditions": {
-        "recipe": "opallight:green_lantern"
+        "recipe": "opallight:orange_lantern"
       },
       "trigger": "minecraft:recipe_unlocked"
     }
   },
   "requirements": [
     [
-      "has_the_recipe",
-      "has_stone_pickaxe"
+      "has_stone_pickaxe",
+      "has_the_recipe"
     ]
   ],
   "rewards": {
     "recipes": [
-      "opallight:green_lantern"
+      "opallight:orange_lantern"
     ]
-  }
+  },
+  "sends_telemetry_event": false
 }

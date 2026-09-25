@@ -40,6 +40,7 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
         return red != green || green != blue;
     }
 
+    /// 1.20.1 的顶点流仍按 {@code vertex/color/uv/.../endVertex} 逐段写入。
     private static final class ColoredVertexConsumer implements VertexConsumer {
         private final VertexConsumer output;
         private final @Nullable Vec3 cameraPos;
@@ -52,10 +53,10 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
         }
 
         @Override
-        public VertexConsumer addVertex(float x, float y, float z) {
+        public VertexConsumer vertex(double x, double y, double z) {
             if (cameraPos != null)
                 updateColor(LightColorCache.INSTANCE.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z));
-            output.addVertex(x, y, z);
+            output.vertex(x, y, z);
             return this;
         }
 
@@ -70,33 +71,48 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
         }
 
         @Override
-        public VertexConsumer setColor(int r, int g, int b, int a) {
-            output.setColor(Math.round(r * red), Math.round(g * green), Math.round(b * blue), a);
+        public VertexConsumer color(int r, int g, int b, int a) {
+            output.color(Math.round(r * red), Math.round(g * green), Math.round(b * blue), a);
             return this;
         }
 
         @Override
-        public VertexConsumer setUv(float u, float v) {
-            output.setUv(u, v);
+        public VertexConsumer uv(float u, float v) {
+            output.uv(u, v);
             return this;
         }
 
         @Override
-        public VertexConsumer setUv1(int u, int v) {
-            output.setUv1(u, v);
+        public VertexConsumer overlayCoords(int u, int v) {
+            output.overlayCoords(u, v);
             return this;
         }
 
         @Override
-        public VertexConsumer setUv2(int u, int v) {
-            output.setUv2(u, v);
+        public VertexConsumer uv2(int u, int v) {
+            output.uv2(u, v);
             return this;
         }
 
         @Override
-        public VertexConsumer setNormal(float x, float y, float z) {
-            output.setNormal(x, y, z);
+        public VertexConsumer normal(float x, float y, float z) {
+            output.normal(x, y, z);
             return this;
+        }
+
+        @Override
+        public void endVertex() {
+            output.endVertex();
+        }
+
+        @Override
+        public void defaultColor(int r, int g, int b, int a) {
+            output.defaultColor(r, g, b, a);
+        }
+
+        @Override
+        public void unsetDefaultColor() {
+            output.unsetDefaultColor();
         }
     }
 }

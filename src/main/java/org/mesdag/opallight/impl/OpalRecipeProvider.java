@@ -1,10 +1,9 @@
 package org.mesdag.opallight.impl;
 
-import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.data.PackOutput;
+import net.minecraft.data.recipes.FinishedRecipe;
 import net.minecraft.data.recipes.RecipeCategory;
-import net.minecraft.data.recipes.RecipeOutput;
 import net.minecraft.data.recipes.RecipeProvider;
 import net.minecraft.data.recipes.ShapelessRecipeBuilder;
 import net.minecraft.resources.ResourceLocation;
@@ -12,15 +11,15 @@ import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.Items;
 import org.mesdag.opallight.OpalLight;
 
-import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 public class OpalRecipeProvider extends RecipeProvider {
-    public OpalRecipeProvider(PackOutput output, CompletableFuture<HolderLookup.Provider> registries) {
-        super(output, registries);
+    public OpalRecipeProvider(PackOutput output) {
+        super(output);
     }
 
     @Override
-    protected void buildRecipes(RecipeOutput recipeOutput) {
+    protected void buildRecipes(Consumer<FinishedRecipe> recipeOutput) {
         for (DyeColor color : OpalLight.COLORS) {
             ResourceLocation torchId = OpalLight.asResource(color.getName() + "_lantern");
             ShapelessRecipeBuilder.shapeless(RecipeCategory.DECORATIONS, BuiltInRegistries.ITEM.get(torchId))

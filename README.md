@@ -12,7 +12,7 @@ distance, and blend naturally when overlapping. This means colored lighting rend
 complex geometry, rather than being a screen-space post-effect.
 
 The key advantage: **automatically compatible with the vast majority of Iris Shaders** with zero user configuration.
-Also fully supports the VulkanMod renderer.
+The NeoForge 1.21.1 branch additionally supports the VulkanMod renderer.
 
 ## Core Features
 
@@ -34,7 +34,7 @@ Also fully supports the VulkanMod renderer.
 
 - **Iris Shaders**: Automatically compatible with the vast majority of shader packs. No manual compatibility selection
   needed.
-- **VulkanMod**: Native support for the Vulkan renderer.
+- **VulkanMod**: Native support for the Vulkan renderer on the NeoForge 1.21.1 branch.
 - Custom shaders use Core Profile GLSL 150, standards-compliant to avoid rendering conflicts.
 
 ## Example: Colored Lanterns
@@ -64,9 +64,9 @@ Or drop a JSON file under `assets/<modid>/opal_data/` for zero-code integration.
 
 ## Compatibility
 
-| Project                           | Status                                 |
-|-----------------------------------|----------------------------------------|
-| Iris Shaders                      | Auto-compatible with most shader packs |
-| VulkanMod                         | Fully supported                        |
-| NeoForge 1.21.1                   | Native platform                        |
-| Other mods' light-emitting blocks | Compatible via API registration        |
+| Project                           | Status                                  |
+|-----------------------------------|-----------------------------------------|
+| Iris Shaders                      | Auto-compatible with most shader packs  |
+| VulkanMod                         | Supported on the NeoForge 1.21.1 branch |
+| NeoForge 1.21.1 / Forge 1.20.1    | Native platforms                        |
+| Other mods' light-emitting blocks | Compatible via API registration         |

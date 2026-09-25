@@ -7,14 +7,14 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.neoforge.client.event.ClientTickEvent;
-import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
-import net.neoforged.neoforge.client.event.RegisterShadersEvent;
-import net.neoforged.neoforge.event.level.LevelEvent;
-import net.neoforged.neoforge.event.level.ChunkEvent;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
+import net.minecraftforge.client.event.RegisterShadersEvent;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.level.ChunkEvent;
+import net.minecraftforge.event.level.LevelEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
 import org.mesdag.opallight.OpalLight;
 
@@ -22,68 +22,18 @@ import java.io.IOException;
 import java.util.OptionalLong;
 import java.util.function.Supplier;
 
-@EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
+@Mod.EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightManager {
     static ShaderInstance lightMaskShader;
 
-    @SuppressWarnings("deprecation")
     @SubscribeEvent
-    public static void registerShaders(RegisterShadersEvent event) throws IOException {
-        event.registerShader(new ShaderInstance(
-                event.getResourceProvider(),
-                /// VulkanMod 需要字符串形式的着色器名称。
-                "opallight:light_mask",
-                DefaultVertexFormat.POSITION_TEX_COLOR
-        ), shader -> lightMaskShader = shader);
-    }
-
-    @SubscribeEvent
-    public static void registerClientReloadListeners(RegisterClientReloadListenersEvent event) {
-        event.registerReloadListener((barrier, resources, preparationProfiler, reloadProfiler,
-                                      backgroundExecutor, gameExecutor) ->
-                LightDataLoader.INSTANCE.reload(barrier, resources, preparationProfiler, reloadProfiler,
-                                backgroundExecutor, gameExecutor)
-                        .thenRunAsync(LightManager::beginResourceReload, gameExecutor));
-    }
-
-    private static boolean reloadInProgress;
-    private static Boolean previousShaderPackMode;
-
-    public static boolean isReloadInProgress() {
-        return reloadInProgress;
-    }
-
-    private static void beginResourceReload() {
-        boolean previousReloadInProgress = reloadInProgress;
-        reloadInProgress = false;
-        LightSourceDefinitions.clear();
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
-        int changedSources = LightPropagator.refreshDefinitions(level) + DynamicLightSources.update(level);
-        if (changedSources == 0) {
-            reloadInProgress = previousReloadInProgress && LightPropagator.hasPendingUpdates();
-            return;
-        }
-        LightMaskMeshCache.beginDefinitionReload();
-        reloadInProgress = LightPropagator.hasPendingUpdates();
-    }
-
-    @SubscribeEvent
-    public static void clientTick$Pre(ClientTickEvent.Pre event) {
+    public static void clientTick$Pre(TickEvent.ClientTickEvent event) {
+        if (event.phase != TickEvent.Phase.START) return;
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
         updateShaderPackMode();
         DynamicLightSources.update(level);
         updateLighting(level);
-    }
-
-    private static void updateShaderPackMode() {
-        boolean current = LightShaderCompatibility.isShaderPackInUse();
-        if (previousShaderPackMode != null && previousShaderPackMode != current) {
-            LightMaskMeshCache.invalidate();
-            LightColorCache.INSTANCE.forEachSection(LightMaskMeshCache::markDirtyAroundSection);
-        }
-        previousShaderPackMode = current;
     }
 
     @SubscribeEvent
@@ -126,6 +76,37 @@ public final class LightManager {
         }
     }
 
+    private static boolean reloadInProgress;
+    private static Boolean previousShaderPackMode;
+
+    public static boolean isReloadInProgress() {
+        return reloadInProgress;
+    }
+
+    private static void beginResourceReload() {
+        boolean previousReloadInProgress = reloadInProgress;
+        reloadInProgress = false;
+        LightSourceDefinitions.clear();
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null) return;
+        int changedSources = LightPropagator.refreshDefinitions(level) + DynamicLightSources.update(level);
+        if (changedSources == 0) {
+            reloadInProgress = previousReloadInProgress && LightPropagator.hasPendingUpdates();
+            return;
+        }
+        LightMaskMeshCache.beginDefinitionReload();
+        reloadInProgress = LightPropagator.hasPendingUpdates();
+    }
+
+    private static void updateShaderPackMode() {
+        boolean current = LightShaderCompatibility.isShaderPackInUse();
+        if (previousShaderPackMode != null && previousShaderPackMode != current) {
+            LightMaskMeshCache.invalidate();
+            LightColorCache.INSTANCE.forEachSection(LightMaskMeshCache::markDirtyAroundSection);
+        }
+        previousShaderPackMode = current;
+    }
+
     /// 通过 Mixin 接入渲染流程以兼容其他渲染模组。
     public static void render(Matrix4f viewMatrix, Camera camera) {
         ClientLevel level = Minecraft.getInstance().level;
@@ -160,5 +141,29 @@ public final class LightManager {
 
     public static void captureTerrainFog() {
         LightMaskRenderer.captureTerrainFog();
+    }
+
+    /// 1.20.1 的着色器与资源重载事件位于模组事件总线，只能放在独立的订阅类中。
+    @Mod.EventBusSubscriber(modid = OpalLight.MODID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
+    public static final class ModBusEvents {
+        @SuppressWarnings("deprecation")
+        @SubscribeEvent
+        public static void registerShaders(RegisterShadersEvent event) throws IOException {
+            event.registerShader(new ShaderInstance(
+                    event.getResourceProvider(),
+                    /// VulkanMod 需要字符串形式的着色器名称。
+                    "opallight:light_mask",
+                    DefaultVertexFormat.POSITION_TEX_COLOR
+            ), shader -> lightMaskShader = shader);
+        }
+
+        @SubscribeEvent
+        public static void registerClientReloadListeners(RegisterClientReloadListenersEvent event) {
+            event.registerReloadListener((barrier, resources, preparationProfiler, reloadProfiler,
+                                          backgroundExecutor, gameExecutor) ->
+                    LightDataLoader.INSTANCE.reload(barrier, resources, preparationProfiler, reloadProfiler,
+                                    backgroundExecutor, gameExecutor)
+                            .thenRunAsync(LightManager::beginResourceReload, gameExecutor));
+        }
     }
 }

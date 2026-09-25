@@ -6,11 +6,10 @@
       "item": "minecraft:lantern"
     },
     {
-      "item": "minecraft:orange_dye"
+      "item": "minecraft:blue_dye"
     }
   ],
   "result": {
-    "count": 1,
-    "id": "opallight:orange_lantern"
+    "item": "opallight:blue_lantern"
   }
 }

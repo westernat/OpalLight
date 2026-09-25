@@ -9,7 +9,8 @@
 OpalLight 为 Minecraft 提供了一套**通用的彩色光源 API**。与常见的全屏着色器方案不同，OpalLight 采用**逐方块体素级别的 RGB
 光传播**——光线的颜色通过 BFS 在方块间真实传播，随距离衰减，不同颜色混合叠加。这意味着彩色光照在拐角处、复杂结构中都能正确呈现，而非简单的屏幕空间特效。
 
-核心优势：**自动兼容绝大多数 Iris Shaders**，无需用户额外配置或选择兼容光影。同时也完整支持 VulkanMod 渲染器。
+核心优势：**自动兼容绝大多数 Iris Shaders**，无需用户额外配置或选择兼容光影。NeoForge 1.21.1 分支另外完整支持 VulkanMod 渲染器。
+（当前分支对应 Minecraft 1.20.1 + Minecraft Forge。）
 
 ## 核心特性
 
@@ -28,7 +29,7 @@ OpalLight 为 Minecraft 提供了一套**通用的彩色光源 API**。与常见
 ### 广泛的兼容性
 
 - **Iris Shaders**：自动兼容绝大多数光影包，无需用户手动选择兼容配置。
-- **VulkanMod**：原生支持 Vulkan 渲染器。
+- **VulkanMod**：NeoForge 1.21.1 分支原生支持 Vulkan 渲染器。
 - 自定义着色器使用 Core Profile GLSL 150，标准合规，避免渲染冲突。
 
 ## 示例：七彩灯笼
@@ -58,9 +59,9 @@ public static void onLightModification(LightDataLoader.ModificationEvent event) 
 
 ## 兼容性
 
-| 项目              | 状态            |
-|-----------------|---------------|
-| Iris Shaders    | 自动兼容绝大多数光影    |
-| VulkanMod       | 完整支持          |
-| NeoForge 1.21.1 | 原生平台          |
-| 其他模组的发光方块       | 通过 API 注册即可兼容 |
+| 项目                        | 状态               |
+|---------------------------|------------------|
+| Iris Shaders              | 自动兼容绝大多数光影       |
+| VulkanMod                 | NeoForge 1.21.1 分支支持 |
+| NeoForge 1.21.1 / Forge 1.20.1 | 原生平台         |
+| 其他模组的发光方块                 | 通过 API 注册即可兼容    |

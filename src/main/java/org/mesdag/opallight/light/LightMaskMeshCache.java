@@ -357,6 +357,7 @@ public final class LightMaskMeshCache {
         try (mesh) {
             replacement.bind();
             replacement.upload(mesh.mesh());
+            mesh.markUploaded();
             VertexBuffer.unbind();
             if (stageReload && reloadTransaction != null) {
                 reloadTransaction.stage(key, replacement, mesh.geometry());
