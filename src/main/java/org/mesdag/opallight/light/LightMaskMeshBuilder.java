@@ -210,7 +210,8 @@ final class LightMaskMeshBuilder {
                     random.setSeed(state.getSeed(pos));
                     consumer.clear();
                     for (RenderType renderType : model.getRenderTypes(state, random, modelData)) {
-                        if (renderType == RenderType.translucent()) continue;
+                        /// 冰、霜冰、玻璃（含染色与玻璃板）、黏液块等半透明方块同样需要彩光；
+                        /// 流体不参与模型渲染，已被上面的渲染形状检查排除，不会因此把水面点亮。
                         /// 光影包在地形顶点着色器中移动这类几何；静态遮罩不能写入它的旧深度。
                         if (snapshot.shaderPackInUse() && isPotentiallyWaving(state, region, pos, renderType)) continue;
                         pose.pushPose();
