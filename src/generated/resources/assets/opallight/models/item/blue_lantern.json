@@ -1,7 +1,6 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "opallight:item/lantern",
-    "layer1": "opallight:item/lantern_layer"
+    "layer0": "opallight:item/blue_lantern"
   }
 }
