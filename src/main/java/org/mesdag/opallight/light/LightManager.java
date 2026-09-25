@@ -13,8 +13,8 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
-import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
+import net.neoforged.neoforge.event.level.LevelEvent;
 import org.mesdag.opallight.OpalLight;
 
 import java.io.IOException;
@@ -73,6 +73,7 @@ public final class LightManager {
         if (level == null) return;
         updateShaderPackMode();
         DynamicLightSources.update(level);
+        LightPropagator.scheduleCyclingSources(level);
         updateLighting(level);
     }
 

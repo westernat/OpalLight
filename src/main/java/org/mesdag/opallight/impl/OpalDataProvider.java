@@ -9,6 +9,7 @@ import net.minecraft.data.DataProvider;
 import net.minecraft.data.PackOutput;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.OpalLight;
 import org.mesdag.opallight.light.LightDataLoader;
@@ -37,6 +38,14 @@ public class OpalDataProvider implements DataProvider {
         for (DyeColor color : OpalLight.COLORS) {
             add(BuiltInRegistries.BLOCK.get(OpalLight.asResource(color.getName() + "_lantern")), color.getTextColor());
         }
+        addCycle(Blocks.END_ROD);
+    }
+
+    public void addCycle(Block block) {
+        var pattern = new LightDataLoader.CyclePattern(
+            LightDataLoader.CyclePattern.DEFAULT_COLORS, 120, 2);
+        map.computeIfAbsent(block, unused -> new ArrayList<>())
+            .add(LightDataLoader.OpalData.cycle(pattern, Optional.empty()));
     }
 
     public void add(Block block, OpalColor color, @Nullable StatePropertiesPredicate predicate) {

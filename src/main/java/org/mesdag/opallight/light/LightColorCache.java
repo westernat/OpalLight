@@ -96,8 +96,13 @@ public final class LightColorCache {
                 | Math.max(a & 65535L, b & 65535L);
     }
 
-    static long addPacked(long previous, float red, float green, float blue) {
-        return pack(channel(previous, 32) + red, channel(previous, 16) + green, channel(previous, 0) + blue);
+    static long toneMapped(float red, float green, float blue) {
+        float peak = Math.max(red, Math.max(green, blue));
+        if (peak <= 0.0F) return 0;
+        /// 低亮度保持线性；高亮度留出余量，让光源重叠时渐亮且不截断色相。
+        float mapped = peak <= 0.9F ? peak : 0.9F + 0.1F * (peak - 0.9F) / (peak - 0.8F);
+        float scale = mapped / peak;
+        return pack(red * scale, green * scale, blue * scale);
     }
 
     record SectionUpdate(long key, @Nullable Long2LongOpenHashMap colors,

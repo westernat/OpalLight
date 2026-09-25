@@ -47,6 +47,66 @@ Seven colored lanterns are included as API usage demonstrations:
 
 Each lantern is registered through OpalLight's API, showing how blocks are associated with RGB colors.
 
+### Cycling light like Terraria's Rainbow Torch
+
+Define a cycling source by block ID in `assets/<namespace>/opal_data/*.json`. One source emits one color at a time, and
+its entire light field interpolates linearly between palette keyframes. `colors` accepts 2–16 colors, each as a
+normalized `[r, g, b]` array (channels 0–1) or a hexadecimal string. The default palette is red, yellow, green, cyan,
+blue, and magenta. `period_ticks` sets the cycle length (20–1200 ticks, default 120). `update_interval_ticks` controls
+propagation updates (1–20 ticks, default 2).
+
+```json
+{
+  "minecraft:end_rod": {
+    "cycle": {
+      "colors": [
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          1,
+          1,
+          0
+        ],
+        [
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          1,
+          1
+        ],
+        [
+          0,
+          0,
+          1
+        ],
+        [
+          1,
+          0,
+          1
+        ]
+      ],
+      "period_ticks": 120,
+      "update_interval_ticks": 2
+    }
+  }
+}
+```
+
+The built-in example cycles end rod light, including held and dropped end rod items. Cycling requires periodic light
+propagation and mesh updates, so large numbers of cycling sources cost more than stationary ones.
+
+Existing solid RGB and state-dependent definitions remain supported. Contributions from overlapping sources are
+accumulated before a soft brightness compression.
+
+JSON RGB values retain their existing meaning: hexadecimal values and normalized arrays are read as conventional sRGB
+color values. They are currently used as propagation weights without an sRGB-to-linear-light conversion.
+
 ## For Developers
 
 ```java

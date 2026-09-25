@@ -1,4 +1,7 @@
 {
+    "minecraft:end_rod": {
+        "cycle": {}
+    },
   "opallight:blue_lantern": [
     0.0,
     0.0,

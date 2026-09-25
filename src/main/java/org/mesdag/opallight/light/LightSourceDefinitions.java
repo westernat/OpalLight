@@ -12,7 +12,7 @@ import java.util.Map;
 
 /// 解析后的彩光定义及方块状态查询缓存。
 final class LightSourceDefinitions {
-    private static final Map<BlockState, OpalColor> colorCache = new Reference2ObjectOpenHashMap<>();
+    private static final Map<BlockState, LightProfile> colorCache = new Reference2ObjectOpenHashMap<>();
 
     private LightSourceDefinitions() {}
 
@@ -20,15 +20,15 @@ final class LightSourceDefinitions {
         colorCache.clear();
     }
 
-    static @Nullable ObjectIntPair<OpalColor> colorWithEmissive(Level level, BlockPos pos, BlockState state) {
+    static @Nullable ObjectIntPair<LightProfile> colorWithEmissive(Level level, BlockPos pos, BlockState state) {
         int emission = state.getLightEmission(level, pos);
         if (emission <= 0) return null;
-        OpalColor color = colorCache.get(state);
-        if (color == null) {
-            color = LightDataLoader.INSTANCE.getColor(state);
-            if (color == null) color = OpalColor.EMPTY;
-            colorCache.put(state, color);
+        LightProfile profile = colorCache.get(state);
+        if (profile == null) {
+            profile = LightDataLoader.INSTANCE.getProfile(state);
+            if (profile == null) profile = new LightProfile(OpalColor.EMPTY, null);
+            colorCache.put(state, profile);
         }
-        return color == OpalColor.EMPTY ? null : new ObjectIntImmutablePair<>(color, emission);
+        return profile.color() == OpalColor.EMPTY ? null : new ObjectIntImmutablePair<>(profile, emission);
     }
 }
