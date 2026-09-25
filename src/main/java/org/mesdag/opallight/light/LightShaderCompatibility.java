@@ -14,11 +14,8 @@ final class LightShaderCompatibility {
     private static final Method depthColorLocked;
     private static final Method depthColorUnlock;
     private static final Method depthColorDisable;
-    /// 光影模组自身的混合锁；命中时说明遮罩的混合设置也可能被吞掉，只提示一次。
-    private static final Method blendLocked;
 
     private static boolean reclaimFailed;
-    private static boolean blendLockReported;
 
     static {
         Object api = null;
@@ -37,7 +34,6 @@ final class LightShaderCompatibility {
         depthColorLocked = findStatic("net.irisshaders.iris.gl.blending.DepthColorStorage", "isDepthColorLocked");
         depthColorUnlock = findStatic("net.irisshaders.iris.gl.blending.DepthColorStorage", "unlockDepthColor");
         depthColorDisable = findStatic("net.irisshaders.iris.gl.blending.DepthColorStorage", "disableDepthColor");
-        blendLocked = findStatic("net.irisshaders.iris.gl.blending.BlendModeStorage", "isBlendLocked");
     }
 
     private static Method findStatic(String owner, String name) {
@@ -75,7 +71,6 @@ final class LightShaderCompatibility {
         if (depthColorLocked == null || depthColorUnlock == null || reclaimFailed) return false;
         try {
             if (!(Boolean) depthColorLocked.invoke(null)) return false;
-            reportBlendLock();
             depthColorUnlock.invoke(null);
             return true;
         } catch (ReflectiveOperationException | LinkageError error) {
@@ -92,20 +87,6 @@ final class LightShaderCompatibility {
         } catch (ReflectiveOperationException | LinkageError error) {
             reclaimFailed = true;
             OpalLight.LOGGER.error("Cannot restore depth/color state for the shader mod", error);
-        }
-    }
-
-    /// 混合锁在彩光遮罩绘制期间通常不会上锁；真的命中时只提示一次，便于排查残留异常。
-    private static void reportBlendLock() {
-        if (blendLocked == null || blendLockReported) return;
-        try {
-            if ((Boolean) blendLocked.invoke(null)) {
-                blendLockReported = true;
-                OpalLight.LOGGER.warn("The shader mod keeps its blend state locked while drawing the colored light mask; "
-                        + "mask blending may be affected");
-            }
-        } catch (ReflectiveOperationException | LinkageError ignored) {
-            // 提示失败不影响绘制。
         }
     }
 }

@@ -198,7 +198,7 @@ public final class LightMaskMeshCache {
         }
     }
 
-    public static void draw(Matrix4f viewMatrix, Camera camera, ShaderInstance shader,
+    public static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, ShaderInstance shader,
                             boolean reloadInProgress, LongPredicate propagationPending) {
         Minecraft minecraft = Minecraft.getInstance();
         Frustum frustum = minecraft.levelRenderer.getFrustum();
@@ -224,7 +224,7 @@ public final class LightMaskMeshCache {
             }
             visibleGroups.add(key);
         }
-        LightMaskRenderer.draw(viewMatrix, camera, shader, visibleGroups, buffers, transitions);
+        LightMaskRenderer.draw(viewMatrix, projectionMatrix, camera, shader, visibleGroups, buffers, transitions);
     }
 
     private static void expireTransitions() {

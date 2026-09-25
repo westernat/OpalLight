@@ -55,7 +55,8 @@ final class LightMaskRenderer {
         return distanceSquared >= (double) cutoff * cutoff;
     }
 
-    static void draw(Matrix4f viewMatrix, Camera camera, ShaderInstance lightMaskShader, LongArrayList visibleGroups,
+    static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, ShaderInstance lightMaskShader,
+                     LongArrayList visibleGroups,
                      Long2ObjectOpenHashMap<VertexBuffer> buffers,
                      Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
         if (visibleGroups.isEmpty()) {
@@ -66,7 +67,8 @@ final class LightMaskRenderer {
         Vec3 pos = camera.getPosition();
         prepareDraws(pos, visibleGroups, buffers, transitions);
         lightMaskShader.MODEL_VIEW_MATRIX.set(viewMatrix);
-        lightMaskShader.PROJECTION_MATRIX.set(RenderSystem.getProjectionMatrix());
+        /// 光影包合成阶段会改写全局投影矩阵，这里始终使用世界渲染开始时抓取的快照。
+        lightMaskShader.PROJECTION_MATRIX.set(projectionMatrix);
         lightMaskShader.apply();
         /// 光影包启用时 Iris/Oculus 刚在 apply() 末尾锁死深度与颜色写入，先抢回来再摆遮罩自己的状态。
         boolean reclaimedState = LightShaderCompatibility.reclaimDepthColorState();

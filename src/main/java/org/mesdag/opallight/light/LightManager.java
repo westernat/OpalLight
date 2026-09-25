@@ -10,6 +10,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
 import net.minecraftforge.client.event.RegisterShadersEvent;
+import net.minecraftforge.client.event.RenderLevelStageEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.level.ChunkEvent;
 import net.minecraftforge.event.level.LevelEvent;
@@ -107,14 +108,27 @@ public final class LightManager {
         previousShaderPackMode = current;
     }
 
-    /// 通过 Mixin 接入渲染流程以兼容其他渲染模组。
-    public static void render(Matrix4f viewMatrix, Camera camera) {
+    /// 渲染阶段开始时记录的矩阵快照：光影包会在自己的合成阶段改写全局矩阵，遮罩必须用这份快照。
+    private static Matrix4f capturedViewMatrix;
+    private static Matrix4f capturedProjectionMatrix;
+
+    public static void captureMatrices(Matrix4f viewMatrix, Matrix4f projectionMatrix) {
+        capturedViewMatrix = viewMatrix;
+        capturedProjectionMatrix = projectionMatrix;
+    }
+
+    /// 整帧世界渲染（含光影包的 composite/final）结束之后再叠加彩光遮罩。
+    /// 画在光影包合成之前的话，增量会被当成 albedo 参与它的延迟光照，夜里等于看不见。
+    @SubscribeEvent
+    public static void onRenderLevelStage(RenderLevelStageEvent event) {
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
         ClientLevel level = Minecraft.getInstance().level;
-        if (level == null || lightMaskShader == null) return;
+        if (level == null) return;
+        if (lightMaskShader == null || capturedViewMatrix == null || capturedProjectionMatrix == null) return;
         /// 工作线程完成后立即衔接网格构建，不必等下一次客户端刻。
         updateLighting(level);
-        LightMaskMeshCache.draw(viewMatrix, camera, lightMaskShader, reloadInProgress,
-                LightPropagator::isGroupPropagationPending);
+        LightMaskMeshCache.draw(capturedViewMatrix, capturedProjectionMatrix, event.getCamera(), lightMaskShader,
+                reloadInProgress, LightPropagator::isGroupPropagationPending);
     }
 
     private static void updateLighting(ClientLevel level) {
