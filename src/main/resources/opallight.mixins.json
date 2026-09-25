@@ -8,7 +8,6 @@
         "EntityRenderDispatcherMixin",
         "FogRendererMixin",
         "ItemInHandRendererMixin",
-        "LevelRendererMixin",
         "LevelChunkMixin",
         "LightEngineMixin",
         "ParticleEngineMixin"

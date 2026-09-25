@@ -1,7 +1,6 @@
 package org.mesdag.opallight.light;
 
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -13,9 +12,9 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
-import org.joml.Matrix4f;
 import org.mesdag.opallight.OpalLight;
 
 import java.io.IOException;
@@ -126,14 +125,17 @@ public final class LightManager {
         }
     }
 
-    /// 通过 Mixin 接入渲染流程以兼容其他渲染模组。
-    public static void render(Matrix4f viewMatrix, Camera camera) {
+    /// 整帧世界渲染（含光影包的 composite/final）结束之后再叠加彩光遮罩。
+    /// 画在光影包合成之前的话，增量会被当成 albedo 参与它的延迟光照，夜里等于看不见。
+    @SubscribeEvent
+    public static void onRenderLevelStage(RenderLevelStageEvent event) {
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null || lightMaskShader == null) return;
         /// 工作线程完成后立即衔接网格构建，不必等下一次客户端刻。
         updateLighting(level);
-        LightMaskMeshCache.draw(viewMatrix, camera, lightMaskShader, reloadInProgress,
-                LightPropagator::isGroupPropagationPending);
+        LightMaskMeshCache.draw(event.getModelViewMatrix(), event.getProjectionMatrix(), event.getCamera(), lightMaskShader,
+                reloadInProgress, LightPropagator::isGroupPropagationPending);
     }
 
     private static void updateLighting(ClientLevel level) {
