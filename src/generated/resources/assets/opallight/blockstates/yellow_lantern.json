@@ -1,10 +1,10 @@
 {
   "variants": {
     "hanging=false": {
-      "model": "opallight:block/lantern"
+      "model": "opallight:block/yellow_lantern"
     },
     "hanging=true": {
-      "model": "opallight:block/lantern_hanging"
+      "model": "opallight:block/yellow_hanging_lantern"
     }
   }
 }
