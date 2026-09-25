@@ -103,9 +103,10 @@ final class LightMaskMeshBuilder {
         boolean hasGeometry = false;
         for (int dx = 0; dx < 2; dx++) {
             for (int dz = 0; dz < 2; dz++) {
-                /// 1.20.1 的区域缓存只接受方块范围，用这一层的两个对角精确圈出单个分段。
+                /// 1.20.1 的区域缓存只接受方块范围，参数与原版区块重建一致：
+                /// 面剔除与环境光遮蔽会查询分段外的相邻方块，必须留出一格边距并覆盖 3x3 个区块。
                 BlockPos origin = new BlockPos((sx + dx) << 4, sy << 4, (sz + dz) << 4);
-                regions[dx + dz * 2] = regionCache.createRegion(level, origin, origin.offset(15, 15, 15), 0);
+                regions[dx + dz * 2] = regionCache.createRegion(level, origin.offset(-1, -1, -1), origin.offset(16, 16, 16), 1);
                 hasGeometry |= regions[dx + dz * 2] != null;
             }
         }
