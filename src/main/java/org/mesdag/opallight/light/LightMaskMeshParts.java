@@ -60,6 +60,22 @@ final class LightMaskMeshParts {
         }
     }
 
+    boolean markSkyLightChanged(long key, SectionPos section) {
+        var geometry = geometryCache.get(key);
+        if (geometry == null) return false;
+        int minX = (section.x() << 4) - 1, maxX = minX + 17;
+        int minY = (section.y() << 4) - 1, maxY = minY + 17;
+        int minZ = (section.z() << 4) - 1, maxZ = minZ + 17;
+        LongOpenHashSet rebuild = null;
+        for (long pos : geometry.keySet()) {
+            int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
+            if (x < minX || x > maxX || y < minY || y > maxY || z < minZ || z > maxZ) continue;
+            if (rebuild == null) rebuild = rebuildBlocks.computeIfAbsent(key, unused -> new LongOpenHashSet());
+            rebuild.add(pos);
+        }
+        return rebuild != null;
+    }
+
     private static void addNeighbors(LongOpenHashSet blocks, long key, int x, int y, int z) {
         for (int bx = -1; bx <= 1; bx++) {
             for (int by = -1; by <= 1; by++) {

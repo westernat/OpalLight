@@ -1,6 +1,5 @@
 package org.mesdag.opallight.light;
 
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -24,15 +23,15 @@ import java.util.function.Supplier;
 
 @EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightManager {
-    static ShaderInstance lightMaskShader;
+    static LightMaskShader lightMaskShader;
 
     @SubscribeEvent
     public static void registerShaders(RegisterShadersEvent event) throws IOException {
         event.registerShader(new ShaderInstance(
                 event.getResourceProvider(),
                 OpalLight.asResource("light_mask"),
-                DefaultVertexFormat.POSITION_TEX_COLOR
-        ), shader -> lightMaskShader = shader);
+                LightMaskMeshBuilder.VERTEX_FORMAT
+        ), shader -> lightMaskShader = new LightMaskShader(shader));
     }
 
     @SubscribeEvent
@@ -71,6 +70,8 @@ public final class LightManager {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
         updateShaderPackMode();
+        /// 先发布已完成的快照，再采集本刻的移动，减少动态光一刻的延迟。
+        updateLighting(level);
         DynamicLightSources.update(level);
         LightPropagator.scheduleCyclingSources(level);
         updateLighting(level);

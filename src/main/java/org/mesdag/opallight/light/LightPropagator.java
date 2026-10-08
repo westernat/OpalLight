@@ -157,7 +157,7 @@ public final class LightPropagator {
 
     private static void prioritizeDynamicPropagation() {
         ActiveBatch previous = activeBatch;
-        if (previous == null || previous.future().isDone()) return;
+        if (previous == null || previous.dynamic() || previous.future().isDone()) return;
         /// 原批次未完成时保留全部目标和高度范围，再让动态光先计算。
         previous.snapshot().cancel();
         for (long key : previous.versions().keySet()) {
@@ -239,7 +239,7 @@ public final class LightPropagator {
                     for (int sy = (pos.getY() - vertical) >> 4; sy <= (pos.getY() + vertical) >> 4; sy++) {
                         sections.add(SectionPos.asLong(cx + dx, sy, cz + dz));
                     }
-                    scheduleChunk(cx + dx, cz + dz, sections);
+                    scheduleChunk(cx + dx, cz + dz, sections, dynamic);
                     if (dynamic) dynamicPendingChunks.add(ChunkPos.asLong(cx + dx, cz + dz));
                 }
             }
@@ -259,28 +259,46 @@ public final class LightPropagator {
     }
 
     private static void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections) {
+        scheduleChunk(cx, cz, sections, false);
+    }
+
+    private static void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections, boolean dynamic) {
         long key = ChunkPos.asLong(cx, cz);
-        if (pendingChunks.add(key)) {
-            if (activeBatch != null && activeBatch.versions().containsKey(key)) {
-                /// 整个区块版本会失效，重算必须包含旧任务尚未提交的所有高度。
-                var activeSections = activeBatch.snapshot().targetSections(key);
-                if (sections == null || activeSections == null) sections = null;
-                else sections.addAll(activeSections);
+        boolean added = pendingChunks.add(key);
+        boolean activeTarget = activeBatch != null && activeBatch.versions().containsKey(key);
+        /// 移动只合并下一批更新；当前动态快照及已完成的静态快照允许先发布一次。
+        boolean deferred = dynamic && activeTarget && (activeBatch.dynamic() || activeBatch.future().isDone());
+        if (activeTarget) {
+            var activeSections = activeBatch.snapshot().targetSections(key);
+            if (sections == null || activeSections == null) sections = null;
+            else sections.addAll(activeSections);
+            if (!deferred && chunkVersions.get(key) == activeBatch.versions().get(key)) {
+                chunkVersions.addTo(key, 1);
                 activeBatch.snapshot().invalidateTarget(key);
             }
-            if (sections != null) pendingSections.put(key, sections);
+        } else if (added) {
             chunkVersions.addTo(key, 1);
-            if (activeBatch != null && activeBatch.versions().containsKey(key)
-                    && pendingChunks.containsAll(activeBatch.versions().keySet())) {
-                /// 所有目标都已重新排队，旧批次已不可能提交任何结果。
-                activeBatch.snapshot().cancel();
-                activeBatch = null;
-            }
+        }
+        if (added) {
+            if (sections != null) pendingSections.put(key, sections);
         } else if (sections == null) {
             pendingSections.remove(key);
         } else {
             var pending = pendingSections.get(key);
             if (pending != null) pending.addAll(sections);
+        }
+        if (activeTarget && !deferred) {
+            boolean validTarget = false;
+            for (var entry : activeBatch.versions().long2LongEntrySet()) {
+                if (chunkVersions.get(entry.getLongKey()) == entry.getLongValue()) {
+                    validTarget = true;
+                    break;
+                }
+            }
+            if (!validTarget) {
+                activeBatch.snapshot().cancel();
+                activeBatch = null;
+            }
         }
     }
 

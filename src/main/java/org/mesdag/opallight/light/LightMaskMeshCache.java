@@ -5,7 +5,6 @@ import it.unimi.dsi.fastutil.longs.*;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.core.BlockPos;
@@ -43,6 +42,9 @@ public final class LightMaskMeshCache {
     private static final LongOpenHashSet dynamicPriorityGroups = new LongOpenHashSet();
     private static final LongOpenHashSet colorDirtyGroups = new LongOpenHashSet();
     private static final LongOpenHashSet batchedDirtyGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet batchedDeferredGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet batchedHardGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet deferredColorGroups = new LongOpenHashSet();
     private static boolean batchingDirty;
     private static final Long2ObjectOpenHashMap<AtomicBoolean> inFlight = new Long2ObjectOpenHashMap<>();
     private static final Long2LongOpenHashMap groupVersions = new Long2LongOpenHashMap();
@@ -70,13 +72,27 @@ public final class LightMaskMeshCache {
     }
 
     private static void dirty(long key, boolean geometryOnly) {
-        AtomicBoolean cancellation = inFlight.get(key);
-        if (cancellation != null) cancellation.set(true);
+        dirty(key, geometryOnly, false);
+    }
+
+    private static void dirty(long key, boolean geometryOnly, boolean deferColor) {
         if (!geometryOnly) colorDirtyGroups.add(key);
         if (batchingDirty) {
             batchedDirtyGroups.add(key);
+            if (!deferColor) {
+                batchedHardGroups.add(key);
+                batchedDeferredGroups.remove(key);
+            } else if (!batchedHardGroups.contains(key)) batchedDeferredGroups.add(key);
             return;
         }
+        AtomicBoolean cancellation = inFlight.get(key);
+        if (deferColor && cancellation != null && !cancellation.get() && reloadTransaction == null) {
+            /// 颜色持续变化时先发布当前网格，再用最新颜色构建一次，避免慢机器上永远取消。
+            deferredColorGroups.add(key);
+            return;
+        }
+        deferredColorGroups.remove(key);
+        if (cancellation != null) cancellation.set(true);
         if (reloadTransaction != null) reloadTransaction.invalidate(key);
         failedGroups.remove(key);
         dirtyGroups.add(key);
@@ -90,8 +106,10 @@ public final class LightMaskMeshCache {
     public static void endDirtyBatch() {
         batchingDirty = false;
         /// 入队时已记录颜色失效；提交批次只更新版本，保留纯几何变化的复用资格。
-        for (long key : batchedDirtyGroups) dirty(key, true);
+        for (long key : batchedDirtyGroups) dirty(key, true, batchedDeferredGroups.contains(key));
         batchedDirtyGroups.clear();
+        batchedDeferredGroups.clear();
+        batchedHardGroups.clear();
     }
 
     public static void invalidateChangedGeometry(long packedPos) {
@@ -100,6 +118,25 @@ public final class LightMaskMeshCache {
 
     public static void markLightingChanged(long packedPos) {
         markBlockAffected(packedPos, false);
+    }
+
+    public static void markSkyLightChanged(SectionPos section) {
+        int minX = (section.x() << 4) - 1, maxX = minX + 17;
+        int minY = (section.y() << 4) - 1, maxY = minY + 17;
+        int minZ = (section.z() << 4) - 1, maxZ = minZ + 17;
+        for (int gx = minX >> GROUP_XZ_BLOCK_SHIFT; gx <= maxX >> GROUP_XZ_BLOCK_SHIFT; gx++) {
+            for (int gy = minY >> GROUP_Y_BLOCK_SHIFT; gy <= maxY >> GROUP_Y_BLOCK_SHIFT; gy++) {
+                for (int gz = minZ >> GROUP_XZ_BLOCK_SHIFT; gz <= maxZ >> GROUP_XZ_BLOCK_SHIFT; gz++) {
+                    long key = SectionPos.asLong(gx, gy, gz);
+                    boolean staged = reloadTransaction != null && reloadTransaction.contains(key);
+                    if (!buffers.containsKey(key) && !inFlight.containsKey(key) && !dirtyGroups.contains(key) && !staged) continue;
+                    boolean changed = parts.markSkyLightChanged(key, section);
+                    if (!changed && !inFlight.containsKey(key) && !dirtyGroups.contains(key) && !staged) continue;
+                    /// 屋顶/墙壁改变后原版会更新整段天空光；缓存的模型顶点也必须重新获取它。
+                    dirty(key, true);
+                }
+            }
+        }
     }
 
     private static void markBlockAffected(long packedPos, boolean immediate) {
@@ -139,7 +176,7 @@ public final class LightMaskMeshCache {
             for (int gy = (minY - 1) >> GROUP_Y_BLOCK_SHIFT; gy <= (maxY + 1) >> GROUP_Y_BLOCK_SHIFT; gy++) {
                 for (int gz = (minZ - 1) >> GROUP_XZ_BLOCK_SHIFT; gz <= (maxZ + 1) >> GROUP_XZ_BLOCK_SHIFT; gz++) {
                     long key = SectionPos.asLong(gx, gy, gz);
-                    dirty(key);
+                    dirty(key, false, true);
                     /// 动态颜色优先异步重建，避免在渲染线程同步烘焙整组模型。
                     if (immediate && reloadTransaction == null) dynamicPriorityGroups.add(key);
                 }
@@ -198,7 +235,7 @@ public final class LightMaskMeshCache {
         }
     }
 
-    public static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, ShaderInstance shader,
+    public static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, LightMaskShader shader,
                             boolean reloadInProgress, LongPredicate propagationPending) {
         Minecraft minecraft = Minecraft.getInstance();
         Frustum frustum = minecraft.levelRenderer.getFrustum();
@@ -323,7 +360,13 @@ public final class LightMaskMeshCache {
                 if (result.mesh() != null) result.mesh().close();
                 continue;
             }
+            boolean followup = deferredColorGroups.remove(result.key());
+            boolean dynamicFollowup = dynamicPriorityGroups.contains(result.key());
             applyMesh(result.key(), result.mesh(), true);
+            if (followup) {
+                dirty(result.key());
+                if (dynamicFollowup) dynamicPriorityGroups.add(result.key());
+            }
         }
 
         if (!schedule) return;
@@ -488,6 +531,9 @@ public final class LightMaskMeshCache {
         dirtyGroups.clear();
         colorDirtyGroups.clear();
         batchedDirtyGroups.clear();
+        batchedDeferredGroups.clear();
+        batchedHardGroups.clear();
+        deferredColorGroups.clear();
         batchingDirty = false;
     }
 

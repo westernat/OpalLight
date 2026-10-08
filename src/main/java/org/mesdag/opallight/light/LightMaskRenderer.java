@@ -55,7 +55,7 @@ final class LightMaskRenderer {
         return distanceSquared >= (double) cutoff * cutoff;
     }
 
-    static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, ShaderInstance lightMaskShader,
+    static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, LightMaskShader program,
                      LongArrayList visibleGroups,
                      Long2ObjectOpenHashMap<VertexBuffer> buffers,
                      Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
@@ -63,13 +63,12 @@ final class LightMaskRenderer {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
+        ShaderInstance lightMaskShader = program.shader;
         lightMaskShader.setSampler("Sampler0", minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
         Vec3 pos = camera.getPosition();
         prepareDraws(pos, visibleGroups, buffers, transitions);
-        lightMaskShader.MODEL_VIEW_MATRIX.set(viewMatrix);
-        /// 光影包合成阶段会改写全局投影矩阵，这里始终使用事件给出的快照。
-        lightMaskShader.PROJECTION_MATRIX.set(projectionMatrix);
-        lightMaskShader.apply();
+        Uniform tintPass = program.tintPass;
+        program.apply(viewMatrix, projectionMatrix, minecraft.level);
         /// 光影包启用时 Iris 刚在 apply() 末尾锁死深度与颜色写入，先抢回来再摆遮罩自己的状态。
         boolean reclaimedState = LightShaderCompatibility.reclaimDepthColorState();
         try {
@@ -85,10 +84,8 @@ final class LightMaskRenderer {
                 lightMaskShader.FOG_COLOR.upload();
                 lightMaskShader.FOG_SHAPE.upload();
             }
-            Uniform groupOffset = lightMaskShader.getUniform("GroupOffset");
-            if (groupOffset == null) throw new IllegalStateException("Missing colored light group offset uniform");
-            Uniform transitionWeight = lightMaskShader.getUniform("TransitionWeight");
-            if (transitionWeight == null) throw new IllegalStateException("Missing colored light transition uniform");
+            Uniform groupOffset = program.groupOffset;
+            Uniform transitionWeight = program.transitionWeight;
             GlStateManager._polygonOffset(-1.0F, -1.0F);
             GlStateManager._enablePolygonOffset();
             GlStateManager._enableDepthTest();
@@ -101,8 +98,15 @@ final class LightMaskRenderer {
             GlStateManager._depthMask(false);
             GlStateManager._depthFunc(GL11.GL_EQUAL);
             GlStateManager._enableBlend();
-            /// 增量来自模型纹理，避免把已雾化的目标颜色再次增亮。
-            GlStateManager._blendFunc(GL11.GL_ONE, GL11.GL_ONE);
+            /// 先过滤原版白光中的多余通道，显色不依赖额外增亮，蓝灯不会只留下白光。
+            tintPass.set(1);
+            tintPass.upload();
+            GlStateManager._blendFuncSeparate(GL11.GL_DST_COLOR, GL11.GL_ZERO, GL11.GL_ZERO, GL11.GL_ONE);
+            drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), true);
+            /// 再以原有 0.3 上限补充照明，模型 AO/植被染色只在这一步参与。
+            tintPass.set(0);
+            tintPass.upload();
+            GlStateManager._blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ZERO, GL11.GL_ONE);
             drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), true);
         } finally {
             GlStateManager._colorMask(true, true, true, true);
@@ -146,7 +150,7 @@ final class LightMaskRenderer {
     }
 
     private static void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, int count, boolean colorPass) {
-        /// 两遍复用同一份缓冲引用和相机相对坐标。
+        /// 三遍复用同一份缓冲引用和相机相对坐标。
         float uploadedWeight = Float.NaN;
         for (int i = 0; i < count; i++) {
             groupOffset.set(drawOffsets[i * 3], drawOffsets[i * 3 + 1], drawOffsets[i * 3 + 2]);

@@ -2,6 +2,7 @@ package org.mesdag.opallight.light;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.BlockGetter;
 
 import java.util.BitSet;
 
@@ -12,6 +13,7 @@ final class LightMeshColorGrid {
     private int minX, minY, minZ;
     private final long[] colors = new long[WIDTH * HEIGHT * WIDTH];
     private final BitSet occupied = new BitSet(colors.length);
+    private final LightColorSampler sampler = new LightColorSampler(this::get, true);
 
     LightMeshColorGrid(long key) {
         reset(key);
@@ -23,6 +25,7 @@ final class LightMeshColorGrid {
             colors[index] = 0;
         }
         occupied.clear();
+        sampler.clear();
         minX = (SectionPos.x(key) << LightMeshLayout.GROUP_XZ_BLOCK_SHIFT) - 2;
         minY = (SectionPos.y(key) << LightMeshLayout.GROUP_Y_BLOCK_SHIFT) - 2;
         minZ = (SectionPos.z(key) << LightMeshLayout.GROUP_XZ_BLOCK_SHIFT) - 2;
@@ -38,6 +41,11 @@ final class LightMeshColorGrid {
     long get(int x, int y, int z) {
         int index = index(x, y, z);
         return index < 0 ? 0 : colors[index];
+    }
+
+    void sample(BlockGetter view, double x, double y, double z,
+                int anchorX, int anchorY, int anchorZ, float[] result) {
+        sampler.sample(view, x, y, z, anchorX, anchorY, anchorZ, result);
     }
 
     private int index(int x, int y, int z) {

@@ -63,6 +63,8 @@ final class LightPropagationSolver {
             int sourceX = BlockPos.getX(source.pos()), sourceZ = BlockPos.getZ(source.pos());
             var cycle = source.profile().cycle();
             OpalColor sourceColor = cycle == null ? source.profile().color() : cycleColor(cycle, input.gameTime());
+            float sourcePeak = Math.max(sourceColor.r(), Math.max(sourceColor.g(), sourceColor.b()));
+            if (sourcePeak <= 0) continue;
             boolean trim = sourceX - radius < minX || sourceX + radius > maxX
                     || sourceZ - radius < minZ || sourceZ + radius > maxZ;
             /// 高位标记当前光源，低位保存亮度；避免为封闭光源也清空整块数组。
@@ -74,9 +76,13 @@ final class LightPropagationSolver {
             for (int lightLevel = source.emission(); lightLevel >= 1; lightLevel--) {
                 LongArrayFIFOQueue queue = queues[lightLevel];
                 float factor = (float) lightLevel / source.emission();
-                float solidRed = sourceColor.r() * factor;
-                float solidGreen = sourceColor.g() * factor;
-                float solidBlue = sourceColor.b() * factor;
+                /// 少量白色只混入前三格，沿同一遮挡路径衰减，保持峰值和传播范围不变。
+                float white = LightFalloff.coreWhite(source.emission() - lightLevel);
+                float strength = sourcePeak * factor;
+                /// 每档只计算一次颜色，体素循环只累加各灯贡献。
+                double solidRed = LightColorMixer.contribution(sourceColor.r(), sourcePeak, white, strength);
+                double solidGreen = LightColorMixer.contribution(sourceColor.g(), sourcePeak, white, strength);
+                double solidBlue = LightColorMixer.contribution(sourceColor.b(), sourcePeak, white, strength);
                 while (!queue.isEmpty()) {
                     long pos = queue.dequeueLong();
                     int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
@@ -158,7 +164,7 @@ final class LightPropagationSolver {
             for (int i = section.occupied.nextSetBit(0); i >= 0; i = section.occupied.nextSetBit(i + 1)) {
                 int offset = i * 3;
                 values.put(BlockPos.asLong(sx + (i & 15), sy + (i >> 8), sz + (i >> 4 & 15)),
-                    LightColorCache.toneMapped(section.colors[offset], section.colors[offset + 1], section.colors[offset + 2]));
+                    LightColorData.pack(section.colors[offset], section.colors[offset + 1], section.colors[offset + 2]));
             }
             output.put(key, values);
         }
@@ -168,7 +174,8 @@ final class LightPropagationSolver {
 
     /// 传播期间按分段局部坐标累加，完成后一次生成稀疏结果，避免每个光源重复哈希同一体素。
     private static final class AccumulatedSection {
-        final float[] colors = new float[4096 * 3];
+        /// 双精度累加避免大量强弱光源混合时小贡献丢失、遍历顺序引起颜色抖动。
+        final double[] colors = new double[4096 * 3];
         final BitSet occupied = new BitSet(4096);
     }
 

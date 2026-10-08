@@ -22,6 +22,7 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.util.FastColor;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
@@ -36,8 +37,9 @@ import static org.mesdag.opallight.light.LightMeshLayout.*;
 
 /// 负责生成不可变区块快照，并在工作线程中构建彩光网格。
 final class LightMaskMeshBuilder {
-    private static final int VERTEX_FLOATS = 10;
-    private static final int OUTPUT_VERTEX_BYTES = DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize();
+    private static final int VERTEX_FLOATS = 12;
+    static final VertexFormat VERTEX_FORMAT = LightMaskVertex.FORMAT;
+    private static final int OUTPUT_VERTEX_BYTES = VERTEX_FORMAT.getVertexSize();
     private static final int QUAD_FLOATS = VERTEX_FLOATS * 4;
     private static final byte[] EMPTY_VERTICES = new byte[0];
     private static final ThreadLocal<LightMeshColorGrid> colorScratch =
@@ -165,13 +167,13 @@ final class LightMaskMeshBuilder {
                     geometry.put(packed, previous);
                     continue;
                 }
+                int blockX = BlockPos.getX(packed), blockZ = BlockPos.getZ(packed);
+                RenderChunkRegion region = snapshot.regions()[((blockX >> 4) - snapshot.sectionX())
+                        + ((blockZ >> 4) - snapshot.sectionZ()) * 2];
+                if (region == null) continue;
                 float[] blockGeometry = previous == null ? null : previous.geometry();
                 if (blockGeometry == null || changedBlocks.contains(packed)) {
                     pos.set(BlockPos.getX(packed), BlockPos.getY(packed), BlockPos.getZ(packed));
-                    int regionX = (pos.getX() >> 4) - snapshot.sectionX();
-                    int regionZ = (pos.getZ() >> 4) - snapshot.sectionZ();
-                    RenderChunkRegion region = snapshot.regions()[regionX + regionZ * 2];
-                    if (region == null) continue;
                     BlockState state = region.getBlockState(pos);
                     if (state.getRenderShape() != RenderShape.MODEL) continue;
                     if (shaper == null) shaper = dispatcher.getBlockModelShaper();
@@ -191,7 +193,7 @@ final class LightMaskMeshBuilder {
                     }
                     blockGeometry = consumer.vertices();
                 }
-                byte[] vertices = colorize(blockGeometry, colors, sampled, output, encoded, packed, minX, minY, minZ);
+                byte[] vertices = encodeLightData(blockGeometry, colors, region, sampled, output, encoded, packed, minX, minY, minZ);
                 if (vertices.length != 0) {
                     vertexCount += appendVertices(memory, vertices);
                     geometry.put(packed, new BlockMesh(blockGeometry, vertices));
@@ -240,7 +242,8 @@ final class LightMaskMeshBuilder {
         return candidates;
     }
 
-    private static byte[] colorize(float[] vertices, LightMeshColorGrid colors,
+    private static byte[] encodeLightData(float[] vertices, LightMeshColorGrid colors,
+                                   BlockGetter view,
                                    float[] sampled, float[] output, EncodingScratch scratch,
                                    long packed, int originX, int originY, int originZ) {
         int blockX = BlockPos.getX(packed), blockY = BlockPos.getY(packed), blockZ = BlockPos.getZ(packed);
@@ -250,29 +253,28 @@ final class LightMaskMeshBuilder {
             for (int vertex = 0; vertex < 4; vertex++) {
                 int source = quad + vertex * VERTEX_FLOATS;
                 int target = vertex * 4;
-                sampleColor(blockX + (double) vertices[source] + vertices[source + 7],
+                /// 面外体素作为锚点，墙角不能从墙外斜对角借用颜色。
+                colors.sample(view, blockX + (double) vertices[source] + vertices[source + 7],
                         blockY + (double) vertices[source + 1] + vertices[source + 8],
-                        blockZ + (double) vertices[source + 2] + vertices[source + 9], sampled, colors);
-                float strength = Math.max(sampled[0], Math.max(sampled[1], sampled[2]));
-                int baseColor = (int) vertices[source + 5];
-                output[target] = strength > 0 ? sampled[0] / strength * ((baseColor >>> 16) & 255) / 255F : 0;
-                output[target + 1] = strength > 0 ? sampled[1] / strength * ((baseColor >>> 8) & 255) / 255F : 0;
-                output[target + 2] = strength > 0 ? sampled[2] / strength * (baseColor & 255) / 255F : 0;
-                output[target + 3] = strength * vertices[source + 6] * 0.9F;
-                lit |= output[target + 3] > 0;
+                        blockZ + (double) vertices[source + 2] + vertices[source + 9],
+                        blockX + (int) Math.signum(vertices[source + 7]),
+                        blockY + (int) Math.signum(vertices[source + 8]),
+                        blockZ + (int) Math.signum(vertices[source + 9]), sampled);
+                /// 仅复制原始贡献，色相、强度、限亮和透明度全部交给 GLSL。
+                output[target] = sampled[0];
+                output[target + 1] = sampled[1];
+                output[target + 2] = sampled[2];
+                lit |= vertices[source + 6] > 0 && (sampled[0] > 0 || sampled[1] > 0 || sampled[2] > 0);
             }
             if (!lit) continue;
             for (int vertex = 0; vertex < 4; vertex++) {
                 int source = quad + vertex * VERTEX_FLOATS;
                 int target = vertex * 4;
-                encoded.putFloat(blockX - originX + vertices[source]);
-                encoded.putFloat(blockY - originY + vertices[source + 1]);
-                encoded.putFloat(blockZ - originZ + vertices[source + 2]);
-                encoded.putFloat(vertices[source + 3]);
-                encoded.putFloat(vertices[source + 4]);
-                for (int channel = 0; channel < 4; channel++) {
-                    encoded.put((byte) (int) (output[target + channel] * 255.0F));
-                }
+                LightMaskVertex.write(encoded, blockX - originX + vertices[source],
+                        blockY - originY + vertices[source + 1], blockZ - originZ + vertices[source + 2],
+                        vertices[source + 3], vertices[source + 4], (int) vertices[source + 5], vertices[source + 6],
+                        (int) vertices[source + 11], (int) vertices[source + 10],
+                        output[target], output[target + 1], output[target + 2]);
             }
         }
         return encoded.position() == 0 ? EMPTY_VERTICES
@@ -300,14 +302,14 @@ final class LightMaskMeshBuilder {
         if (vertexCount == 0) return null;
         var mode = VertexFormat.Mode.QUADS;
         return new MeshData(java.util.Objects.requireNonNull(memory.build()), new MeshData.DrawState(
-                DefaultVertexFormat.POSITION_TEX_COLOR, vertexCount, mode.indexCount(vertexCount), mode,
+                VERTEX_FORMAT, vertexCount, mode.indexCount(vertexCount), mode,
                 VertexFormat.IndexType.least(vertexCount)));
     }
 
     private static final class GeometryVertexConsumer implements VertexConsumer {
         private final FloatArrayList vertices = new FloatArrayList();
         private float x, y, z, u, v;
-        private int color;
+        private int color, light;
 
         private void clear() {
             vertices.clear();
@@ -334,6 +336,9 @@ final class LightMaskMeshBuilder {
             vertices.add(nx * offset);
             vertices.add(ny * offset);
             vertices.add(nz * offset);
+            /// 保存模型面经过 AO 插值后的天空光，绘制时随昼夜变化即时衰减。
+            vertices.add((light >>> 16) & 65535);
+            vertices.add(light & 65535);
         }
 
         private float faceSampleOffset(float x, float y, float z, float nx, float ny, float nz) {
@@ -347,6 +352,7 @@ final class LightMaskMeshBuilder {
 
         @Override
         public VertexConsumer addVertex(float x, float y, float z) {
+            light = 0;
             this.x = x;
             this.y = y;
             this.z = z;
@@ -373,38 +379,14 @@ final class LightMaskMeshBuilder {
 
         @Override
         public VertexConsumer setUv2(int u, int v) {
+            light = v << 16 | u;
             return this;
         }
 
         @Override
         public VertexConsumer setNormal(float nx, float ny, float nz) {
-            addVertex(x, y, z, color, u, v, 0, 0, nx, ny, nz);
+            addVertex(x, y, z, color, u, v, 0, light, nx, ny, nz);
             return this;
-        }
-    }
-
-    private static void sampleColor(double x, double y, double z, float[] result, LightMeshColorGrid colors) {
-        double gx = x - 0.5, gy = y - 0.5, gz = z - 0.5;
-        int bx = (int) Math.floor(gx), by = (int) Math.floor(gy), bz = (int) Math.floor(gz);
-        float fx = (float) (gx - bx), fy = (float) (gy - by), fz = (float) (gz - bz);
-        result[0] = result[1] = result[2] = 0;
-        for (int dx = 0; dx <= 1; dx++) {
-            float wx = dx == 0 ? 1 - fx : fx;
-            if (wx == 0) continue;
-            for (int dy = 0; dy <= 1; dy++) {
-                float wy = dy == 0 ? 1 - fy : fy;
-                if (wy == 0) continue;
-                for (int dz = 0; dz <= 1; dz++) {
-                    float wz = dz == 0 ? 1 - fz : fz;
-                    if (wz == 0) continue;
-                    long color = colors.get(bx + dx, by + dy, bz + dz);
-                    if (color == 0) continue;
-                    float weight = wx * wy * wz;
-                    result[0] += LightColorCache.channel(color, 32) * weight;
-                    result[1] += LightColorCache.channel(color, 16) * weight;
-                    result[2] += LightColorCache.channel(color, 0) * weight;
-                }
-            }
         }
     }
 
