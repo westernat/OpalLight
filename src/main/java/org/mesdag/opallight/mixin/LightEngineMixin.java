@@ -1,16 +1,16 @@
 package org.mesdag.opallight.mixin;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.chunk.LightChunkGetter;
 import net.minecraft.world.level.lighting.BlockLightEngine;
 import net.minecraft.world.level.lighting.LightEngine;
-import org.mesdag.opallight.light.LightPropagator;
 import org.mesdag.opallight.light.LightColorCache;
 import org.mesdag.opallight.light.LightMaskMeshCache;
+import org.mesdag.opallight.light.LightPropagator;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -50,7 +50,7 @@ public abstract class LightEngineMixin {
             if (affected && LightColorCache.INSTANCE.hasColorNear(pos)) {
                 LightMaskMeshCache.markLightingChanged(packedPos);
             }
-            /// checkBlock 也可能来自未改变 BlockState 的动态遮挡；原版检查不能只刷新模型。
+            // checkBlock 也可能来自未改变 BlockState 的动态遮挡；原版检查不能只刷新模型。
             LightPropagator.scheduleAround(pos);
         }
     }

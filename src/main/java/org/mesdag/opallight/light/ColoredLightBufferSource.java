@@ -8,7 +8,6 @@ import net.minecraft.util.FastColor;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
-/// 在实体原有顶点流中加入彩光，保留其纹理、深度和渲染层。
 public final class ColoredLightBufferSource implements MultiBufferSource {
     private final MultiBufferSource delegate;
     private final @Nullable Vec3 cameraPos;
@@ -37,13 +36,6 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
     static VertexConsumer wrapFixed(VertexConsumer output, long color, float skyBrightness, float ambientLight) {
         return color != 0 ? new ColoredVertexConsumer(output, null, color, skyBrightness, ambientLight) : output;
-    }
-
-    public static boolean hasTint(long color) {
-        long red = color >>> 32 & 65535L;
-        long green = color >>> 16 & 65535L;
-        long blue = color & 65535L;
-        return red != green || green != blue;
     }
 
     private static final class ColoredVertexConsumer implements VertexConsumer {
@@ -106,7 +98,7 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
         @Override
         public VertexConsumer setUv2(int u, int v) {
-            /// 限制彩光亮度并按天空光衰减，避免在原版天空光之上额外加亮。
+            // 限制彩光亮度并按天空光衰减，避免在原版天空光之上额外加亮。
             output.setUv2(blockLight(u, v), v);
             return this;
         }

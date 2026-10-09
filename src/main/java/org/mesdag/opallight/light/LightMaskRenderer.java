@@ -20,7 +20,6 @@ import org.lwjgl.opengl.GL11;
 import static org.mesdag.opallight.light.LightMeshLayout.GROUP_XZ_BLOCK_SHIFT;
 import static org.mesdag.opallight.light.LightMeshLayout.GROUP_Y_BLOCK_SHIFT;
 
-/// 对可见遮罩先裁决深度，再只给最近的模型面叠合彩光。
 final class LightMaskRenderer {
     private record TerrainFog(float start, float end, float red, float green, float blue,
                               float alpha, FogShape shape) {}
@@ -28,6 +27,7 @@ final class LightMaskRenderer {
     private static TerrainFog terrainFog;
     private static VertexBuffer[] drawBuffers = new VertexBuffer[0];
     private static VertexBuffer[] previousBuffers = new VertexBuffer[0];
+    private static int[] previousColors = new int[0];
     private static float[] drawOffsets = new float[0];
     private static float[] transitionWeights = new float[0];
 
@@ -66,15 +66,20 @@ final class LightMaskRenderer {
         ShaderInstance lightMaskShader = program.shader;
         lightMaskShader.setSampler("Sampler0", minecraft.getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId());
         Vec3 pos = camera.getPosition();
-        prepareDraws(pos, visibleGroups, buffers, transitions);
-        Uniform tintPass = program.tintPass;
-        program.apply(viewMatrix, projectionMatrix, minecraft.level);
-        /// 光影包启用时 Iris 刚在 apply() 末尾锁死深度与颜色写入，先抢回来再摆遮罩自己的状态。
+        boolean gpuTransitions = prepareDraws(pos, visibleGroups, buffers, transitions);
+        program.apply(viewMatrix, projectionMatrix);
+        int activeTexture = 0, previousColorBinding = 0;
+        if (gpuTransitions) {
+            activeTexture = GL11.glGetInteger(org.lwjgl.opengl.GL13.GL_ACTIVE_TEXTURE);
+            GlStateManager._activeTexture(org.lwjgl.opengl.GL13.GL_TEXTURE1);
+            previousColorBinding = GL11.glGetInteger(org.lwjgl.opengl.GL31.GL_TEXTURE_BINDING_BUFFER);
+        }
+        // Iris 在 apply() 后锁定深度与颜色写入，绘制前需临时解锁。
         boolean reclaimedState = LightShaderCompatibility.reclaimDepthColorState();
         try {
             TerrainFog fog = terrainFog;
             if (fog != null) {
-                /// 原版后续渲染阶段可能改写全局雾状态，遮罩始终使用地形雾。
+                // 原版后续渲染阶段可能改写全局雾状态，遮罩始终使用地形雾。
                 lightMaskShader.FOG_START.set(fog.start());
                 lightMaskShader.FOG_END.set(fog.end());
                 lightMaskShader.FOG_COLOR.set(fog.red(), fog.green(), fog.blue(), fog.alpha());
@@ -93,22 +98,18 @@ final class LightMaskRenderer {
             GlStateManager._depthMask(true);
             GlStateManager._depthFunc(GL11.GL_LEQUAL);
             GlStateManager._colorMask(false, false, false, false);
-            drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), false);
+            drawVisibleBuffers(groupOffset, transitionWeight, program.blendVertexColors, visibleGroups.size(), false);
             GlStateManager._colorMask(true, true, true, true);
             GlStateManager._depthMask(false);
             GlStateManager._depthFunc(GL11.GL_EQUAL);
             GlStateManager._enableBlend();
-            /// 先过滤原版白光中的多余通道，显色不依赖额外增亮，蓝灯不会只留下白光。
-            tintPass.set(1);
-            tintPass.upload();
-            GlStateManager._blendFuncSeparate(GL11.GL_DST_COLOR, GL11.GL_ZERO, GL11.GL_ZERO, GL11.GL_ONE);
-            drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), true);
-            /// 再以原有 0.3 上限补充照明，模型 AO/植被染色只在这一步参与。
-            tintPass.set(0);
-            tintPass.upload();
-            GlStateManager._blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ZERO, GL11.GL_ONE);
-            drawVisibleBuffers(groupOffset, transitionWeight, visibleGroups.size(), true);
+            GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
+            drawVisibleBuffers(groupOffset, transitionWeight, program.blendVertexColors, visibleGroups.size(), true);
         } finally {
+            if (gpuTransitions) {
+                GL11.glBindTexture(org.lwjgl.opengl.GL31.GL_TEXTURE_BUFFER, previousColorBinding);
+                GlStateManager._activeTexture(activeTexture);
+            }
             GlStateManager._colorMask(true, true, true, true);
             GlStateManager._blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO);
             GlStateManager._disableBlend();
@@ -116,7 +117,7 @@ final class LightMaskRenderer {
             GlStateManager._depthMask(true);
             GlStateManager._disablePolygonOffset();
             GlStateManager._polygonOffset(0.0F, 0.0F);
-            /// 状态恢复后再重新上锁；随后 clear() 会按光影模组自己的流程解锁并还原状态。
+            // 先恢复渲染状态再上锁，随后交回 Iris 的 clear() 流程。
             LightShaderCompatibility.restoreDepthColorState(reclaimedState);
             lightMaskShader.clear();
             VertexBuffer.unbind();
@@ -125,37 +126,52 @@ final class LightMaskRenderer {
         }
     }
 
-    private static void prepareDraws(Vec3 cameraPos, LongArrayList visibleGroups,
+    private static boolean prepareDraws(Vec3 cameraPos, LongArrayList visibleGroups,
                                      Long2ObjectOpenHashMap<VertexBuffer> buffers,
                                      Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
         if (drawBuffers.length < visibleGroups.size()) {
             int capacity = Math.max(visibleGroups.size(), drawBuffers.length * 2);
             drawBuffers = new VertexBuffer[capacity];
             previousBuffers = new VertexBuffer[capacity];
+            previousColors = new int[capacity];
             drawOffsets = new float[capacity * 3];
             transitionWeights = new float[capacity];
         }
         long now = System.nanoTime();
+        boolean gpuTransitions = false;
         for (int i = 0; i < visibleGroups.size(); i++) {
             long key = visibleGroups.getLong(i);
             drawBuffers[i] = buffers.get(key);
             var transition = transitions.get(key);
             previousBuffers[i] = transition == null ? null : transition.previous();
+            previousColors[i] = transition == null || transition.colors() == null ? 0 : transition.colors().texture();
+            gpuTransitions |= previousColors[i] != 0;
             transitionWeights[i] = transition == null ? 1.0F
                 : Math.min(1.0F, (float) (now - transition.startedAt()) / LightMaskMeshCache.DYNAMIC_TRANSITION_NANOS);
             drawOffsets[i * 3] = (float) ((SectionPos.x(key) << GROUP_XZ_BLOCK_SHIFT) - cameraPos.x);
             drawOffsets[i * 3 + 1] = (float) ((SectionPos.y(key) << GROUP_Y_BLOCK_SHIFT) - cameraPos.y);
             drawOffsets[i * 3 + 2] = (float) ((SectionPos.z(key) << GROUP_XZ_BLOCK_SHIFT) - cameraPos.z);
         }
+        return gpuTransitions;
     }
 
-    private static void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, int count, boolean colorPass) {
-        /// 三遍复用同一份缓冲引用和相机相对坐标。
+    private static void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, Uniform blendVertexColors,
+                                           int count, boolean colorPass) {
+        int uploadedMode = -1;
         float uploadedWeight = Float.NaN;
         for (int i = 0; i < count; i++) {
+            int mode = colorPass && previousColors[i] != 0 ? 1 : 0;
+            if (mode != uploadedMode) {
+                blendVertexColors.set(mode);
+                blendVertexColors.upload();
+                uploadedMode = mode;
+            }
+            if (mode != 0) {
+                GL11.glBindTexture(org.lwjgl.opengl.GL31.GL_TEXTURE_BUFFER, previousColors[i]);
+            }
             groupOffset.set(drawOffsets[i * 3], drawOffsets[i * 3 + 1], drawOffsets[i * 3 + 2]);
             groupOffset.upload();
-            if (previousBuffers[i] != null) {
+            if (previousBuffers[i] != null && previousColors[i] == 0) {
                 if (colorPass) {
                     float weight = 1.0F - transitionWeights[i];
                     transitionWeight.set(weight);

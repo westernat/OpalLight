@@ -20,7 +20,7 @@ public abstract class EntityRenderDispatcherMixin {
     private MultiBufferSource colorEntity(MultiBufferSource source, @Local(argsOnly = true) Entity entity) {
         if (Minecraft.getInstance().level == null || LightColorCache.INSTANCE.isEmpty()) return source;
         if (entity instanceof ItemEntity item) {
-            /// 掉落物的烘焙模型会在实体局部继续变换，直接采用其所在位置的彩光。
+            // 掉落物的烘焙模型会在实体局部继续变换，直接采用其所在位置的彩光。
             long color = LightColorCache.INSTANCE.sample(item.getX(), item.getY() + 0.5, item.getZ());
             if (color != 0) return new ColoredLightBufferSource(source, color);
         }

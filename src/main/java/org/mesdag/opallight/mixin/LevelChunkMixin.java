@@ -27,7 +27,7 @@ public class LevelChunkMixin {
             @Local(argsOnly = true) BlockState state
     ) {
         if (level.isClientSide) {
-            /// 光源移除后旧几何仍可能留在缓存中，方块变化不能依赖当前是否有彩光。
+            // 光源移除后旧几何仍可能留在缓存中，方块变化不能依赖当前是否有彩光。
             LightMaskMeshCache.invalidateChangedGeometry(pos.asLong());
             long key = LightColorCache.sectionKey(pos);
             boolean affected = LightPropagator.isNearAffectedSection(key);

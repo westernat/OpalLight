@@ -9,7 +9,6 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import org.jetbrains.annotations.Nullable;
 
-/// 缓存方块模型，使彩光变化时只重新生成顶点颜色。
 final class LightMaskMeshParts {
     private final Long2ObjectOpenHashMap<LongOpenHashSet> rebuildBlocks = new Long2ObjectOpenHashMap<>();
     private final Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh>> geometryCache = new Long2ObjectOpenHashMap<>();
@@ -58,22 +57,6 @@ final class LightMaskMeshParts {
             if (rebuild == null) rebuild = rebuildBlocks.computeIfAbsent(key, unused -> new LongOpenHashSet());
             rebuild.add(pos);
         }
-    }
-
-    boolean markSkyLightChanged(long key, SectionPos section) {
-        var geometry = geometryCache.get(key);
-        if (geometry == null) return false;
-        int minX = (section.x() << 4) - 1, maxX = minX + 17;
-        int minY = (section.y() << 4) - 1, maxY = minY + 17;
-        int minZ = (section.z() << 4) - 1, maxZ = minZ + 17;
-        LongOpenHashSet rebuild = null;
-        for (long pos : geometry.keySet()) {
-            int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
-            if (x < minX || x > maxX || y < minY || y > maxY || z < minZ || z > maxZ) continue;
-            if (rebuild == null) rebuild = rebuildBlocks.computeIfAbsent(key, unused -> new LongOpenHashSet());
-            rebuild.add(pos);
-        }
-        return rebuild != null;
     }
 
     private static void addNeighbors(LongOpenHashSet blocks, long key, int x, int y, int z) {

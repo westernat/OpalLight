@@ -23,7 +23,7 @@ import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 
-/// 在客户端线程复制传播所需的方块状态，工作线程只读取此快照。
+// 在客户端线程复制传播所需的方块状态，工作线程只读取此快照。
 final class LightPropagationSnapshot implements BlockGetter {
     private record ChunkSections(PalettedContainer<BlockState>[] states, BitSet copied) {
         @Nullable BlockState get(BlockPos pos, int minSection) {
@@ -37,7 +37,7 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     private final Long2ObjectOpenHashMap<ChunkSections> chunks;
     private final LongOpenHashSet targets;
-    /// 主线程发布替换集合，工作线程不读取正在修改的哈希表。
+    // 主线程发布替换集合，工作线程不读取正在修改的哈希表。
     private volatile LongOpenHashSet remainingTargets;
     private final Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections;
     private final List<LightSource> sources;
@@ -160,7 +160,7 @@ final class LightPropagationSnapshot implements BlockGetter {
         int radius = emission - 1;
         int margin = 2;
         int minSection = minHeight >> 4;
-        /// 可达体素的曼哈顿范围，加两格相邻状态查询余量；避免复制立方体角落的无关分段。
+        // 可达体素的曼哈顿范围，加两格相邻状态查询余量；避免复制立方体角落的无关分段。
         for (int cx = (x - radius - margin) >> 4; cx <= (x + radius + margin) >> 4; cx++) {
             int dx = Math.max(0, Math.max((cx << 4) - x, x - (cx << 4) - 15) - margin);
             for (int cz = (z - radius - margin) >> 4; cz <= (z + radius + margin) >> 4; cz++) {
@@ -263,7 +263,7 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     @Override
     public @Nullable BlockEntity getBlockEntity(BlockPos pos) {
-        /// 依赖方块实体的动态遮挡必须回到客户端线程计算。
+        // 依赖方块实体的动态遮挡必须回到客户端线程计算。
         unsupported = true;
         return null;
     }

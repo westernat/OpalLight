@@ -98,7 +98,6 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
         List<OpalData> list = dataByBlock.get(state.getBlock());
         if (list == null) return null;
         for (OpalData data : list) {
-            /// 循环光源没有固定的 RGB 值。
             if (data.matches(state)) return data.cycle().isPresent() ? null : data.color();
         }
         return null;

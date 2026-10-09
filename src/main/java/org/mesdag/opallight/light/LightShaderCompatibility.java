@@ -4,13 +4,12 @@ import org.mesdag.opallight.OpalLight;
 
 import java.lang.reflect.Method;
 
-/// Iris 是可选依赖；只查询是否启用光影，不依赖某个光影包的顶点动画公式。
+// 通过反射兼容可选的 Iris。
 final class LightShaderCompatibility {
     private static final Object irisApi;
     private static final Method shaderPackInUse;
     private static boolean failed;
 
-    /// Iris 的深度与颜色写入锁，详见 {@link #reclaimDepthColorState()}。
     private static final Method depthColorLocked;
     private static final Method depthColorUnlock;
     private static final Method depthColorDisable;
@@ -62,11 +61,7 @@ final class LightShaderCompatibility {
         }
     }
 
-    /// 光影包启用时，Iris 会在非自身着色器的 {@code apply()} 结束时锁死深度与颜色写入，
-    /// 并在锁存期间取消 {@code GlStateManager} 的深度/颜色状态调用。彩光遮罩依赖这些状态，
-    /// 因此在绘制前临时解锁，绘制结束后重新上锁以保持光影模组自身的状态不变量。
-    ///
-    /// @return 是否真的抢回了状态；未安装光影模组或未上锁时返回 {@code false}
+    // Iris 会锁定深度和颜色写入；绘制遮罩前临时解锁，结束后恢复。
     static boolean reclaimDepthColorState() {
         if (depthColorLocked == null || depthColorUnlock == null || reclaimFailed) return false;
         try {

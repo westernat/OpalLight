@@ -2,9 +2,9 @@ package org.mesdag.opallight.light;
 
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
-import net.minecraft.client.Minecraft;
 import net.minecraft.world.level.BlockGetter;
 import org.jetbrains.annotations.Nullable;
 
@@ -13,7 +13,7 @@ import java.util.function.LongConsumer;
 public final class LightColorCache {
     public static final LightColorCache INSTANCE = new LightColorCache();
 
-    /// 分段保存未限亮的 HDR 系数，只整体替换，网格工作线程可安全持有旧分段。
+    // 已发布分段只替换、不修改，工作线程可持有旧引用。
     private final Long2ObjectOpenHashMap<Long2LongOpenHashMap> sections = new Long2ObjectOpenHashMap<>();
     private final LightColorSampler sampler = new LightColorSampler(this::colorAt, false);
     private final float[] sampled = new float[3];
@@ -26,7 +26,6 @@ public final class LightColorCache {
 
     public boolean hasColorNear(BlockPos pos) {
         int centerX = pos.getX(), centerY = pos.getY(), centerZ = pos.getZ();
-        /// 查询范围完全落在同一分段时只查一次分段表。
         boolean sameSection = (centerX & 15) > 0 && (centerX & 15) < 15
             && (centerY & 15) > 0 && (centerY & 15) < 15
             && (centerZ & 15) > 0 && (centerZ & 15) < 15;
@@ -46,7 +45,6 @@ public final class LightColorCache {
         return false;
     }
 
-    /// 方块实体由独立渲染器绘制，采样自身与六个相邻位置的彩光。
     public long colorAtBlockEntity(BlockPos pos) {
         long color = colorAt(pos.getX(), pos.getY(), pos.getZ());
         color = LightColorData.maximum(color, colorAt(pos.getX() + 1, pos.getY(), pos.getZ()));
@@ -54,7 +52,7 @@ public final class LightColorCache {
         color = LightColorData.maximum(color, colorAt(pos.getX(), pos.getY() + 1, pos.getZ()));
         color = LightColorData.maximum(color, colorAt(pos.getX(), pos.getY() - 1, pos.getZ()));
         color = LightColorData.maximum(color, colorAt(pos.getX(), pos.getY(), pos.getZ() + 1));
-        return LightColorData.display(LightColorData.maximum(color, colorAt(pos.getX(), pos.getY(), pos.getZ() - 1)));
+        return LightColorData.maximum(color, colorAt(pos.getX(), pos.getY(), pos.getZ() - 1));
     }
 
     private long colorAt(int x, int y, int z) {
@@ -62,28 +60,18 @@ public final class LightColorCache {
         return section == null ? 0 : section.get(BlockPos.asLong(x, y, z));
     }
 
-    /// 方块实体顶点与普通方块遮罩使用相同的八点插值位置。
     public long sample(double x, double y, double z) {
         return sample(Minecraft.getInstance().level, x, y, z);
     }
 
     long sample(@Nullable BlockGetter view, double x, double y, double z) {
         sampler.sample(view, x, y, z, (int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z), sampled);
-        return toneMapped(sampled[0], sampled[1], sampled[2]);
-    }
-
-    static long toneMapped(float red, float green, float blue) {
-        float peak = Math.max(red, Math.max(green, blue));
-        if (peak <= 0.0F) return 0;
-        /// 低亮度保持线性；高亮度留出余量，让光源重叠时渐亮且不截断色相。
-        float scale = LightBrightness.mappedStrength(peak) / peak;
-        return pack(red * scale, green * scale, blue * scale);
+        return pack(sampled[0], sampled[1], sampled[2]);
     }
 
     record SectionUpdate(long key, @Nullable Long2LongOpenHashMap colors,
                          int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {}
 
-    /// 工作线程只读已发布的分段，计算准确的变化边界；null 表示完全没有变化。
     static @Nullable SectionUpdate difference(long key, @Nullable Long2LongOpenHashMap old, @Nullable Long2LongOpenHashMap updated) {
         if (old == updated) return null;
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
@@ -115,9 +103,7 @@ public final class LightColorCache {
     }
 
     static long pack(float red, float green, float blue) {
-        return (long) (Math.min(1.0F, red) * 65535.0F + 0.5F) << 32
-                | (long) (Math.min(1.0F, green) * 65535.0F + 0.5F) << 16
-                | (long) (Math.min(1.0F, blue) * 65535.0F + 0.5F);
+        return LightColorData.pack(red, green, blue);
     }
 
     public static float channel(long packed, int shift) {

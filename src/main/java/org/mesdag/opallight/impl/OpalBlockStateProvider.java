@@ -18,7 +18,7 @@ public class OpalBlockStateProvider extends BlockStateProvider {
 
     @Override
     protected void registerStatesAndModels() {
-        /// 每种颜色一套模型，直接继承原版灯笼模板并挂上自己的贴图，不再依赖方块/物品染色。
+        // 每种颜色一套模型，直接继承原版灯笼模板并挂上自己的贴图，不再依赖方块/物品染色。
         ModelFile lantern = new ModelFile.UncheckedModelFile(ResourceLocation.withDefaultNamespace("block/template_lantern"));
         ModelFile hangingLantern = new ModelFile.UncheckedModelFile(ResourceLocation.withDefaultNamespace("block/template_hanging_lantern"));
         ModelFile itemGenerated = new ModelFile.UncheckedModelFile(ResourceLocation.withDefaultNamespace("item/generated"));

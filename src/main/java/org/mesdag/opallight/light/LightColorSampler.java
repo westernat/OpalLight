@@ -9,7 +9,7 @@ import net.minecraft.world.level.lighting.LightEngine;
 import net.minecraft.world.phys.shapes.Shapes;
 import org.jetbrains.annotations.Nullable;
 
-/// 只在八点插值范围内连通的体素之间混色，防止斜对角颜色穿过封闭方块面。
+// 只在八点插值范围内连通的体素之间混色，防止斜对角颜色穿过封闭方块面。
 final class LightColorSampler {
     @FunctionalInterface
     interface Colors {
@@ -34,7 +34,7 @@ final class LightColorSampler {
         if (edges != null) edges.clear();
     }
 
-    void sample(@Nullable BlockGetter view, double x, double y, double z,
+    int sample(@Nullable BlockGetter view, double x, double y, double z,
                 int anchorX, int anchorY, int anchorZ, float[] result) {
         double gx = x - 0.5, gy = y - 0.5, gz = z - 0.5;
         int bx = (int) Math.floor(gx), by = (int) Math.floor(gy), bz = (int) Math.floor(gz);
@@ -47,8 +47,9 @@ final class LightColorSampler {
             samples[i] = weights[i] == 0 ? 0 : colors.get(bx + dx, by + dy, bz + dz);
             if (samples[i] != 0) colored |= 1 << i;
         }
-        if (colored == 0) return;
+        if (colored == 0) return 255;
         int reachable = 255;
+        int equivalentAnchors = 255;
         if (view != null) {
             int seed = Math.clamp(anchorX - bx, 0, 1) | Math.clamp(anchorY - by, 0, 1) << 1
                     | Math.clamp(anchorZ - bz, 0, 1) << 2;
@@ -66,11 +67,14 @@ final class LightColorSampler {
                     frontier |= 1 << neighbor;
                 }
             }
+            // 只有非零权重节点所属的同一连通分量可以共享结果。
+            equivalentAnchors = weights[seed] != 0 ? reachable : 1 << seed;
         }
         for (int i = 0; i < 8; i++) {
             if ((reachable & colored & 1 << i) == 0) continue;
             LightColorData.addWeighted(samples[i], weights[i], result);
         }
+        return equivalentAnchors;
     }
 
     private boolean canCross(BlockGetter view, int x, int y, int z, Direction dir) {

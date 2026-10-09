@@ -5,27 +5,21 @@ import com.mojang.blaze3d.vertex.VertexFormatElement;
 
 import java.nio.ByteBuffer;
 
-/// Java/GLSL 的顶点数据边界：模型 RGBA、原版受光、未经显示转换的 RGB 贡献。
+// 顶点布局：位置 12 字节、纹理 8 字节、颜色 4 字节。
 final class LightMaskVertex {
-    static final VertexFormatElement LIGHT_COLOR = VertexFormatElement.register(VertexFormatElement.findNextId(),
-            0, VertexFormatElement.Type.FLOAT, VertexFormatElement.Usage.GENERIC, 3);
     static final VertexFormat FORMAT = VertexFormat.builder()
             .add("Position", VertexFormatElement.POSITION)
             .add("UV0", VertexFormatElement.UV0)
-            .add("UV2", VertexFormatElement.UV2)
             .add("Color", VertexFormatElement.COLOR)
-            .add("LightColor", LIGHT_COLOR)
             .build();
 
     private LightMaskVertex() {}
 
     static void write(ByteBuffer output, float x, float y, float z, float u, float v,
-                      int modelRgb, float modelAlpha, int blockUv, int skyUv,
+                      float modelAlpha,
                       float red, float green, float blue) {
         output.putFloat(x).putFloat(y).putFloat(z).putFloat(u).putFloat(v);
-        output.putShort((short) blockUv).putShort((short) skyUv);
-        output.put((byte) (modelRgb >>> 16)).put((byte) (modelRgb >>> 8)).put((byte) modelRgb);
+        output.put((byte) Math.round(red * 255)).put((byte) Math.round(green * 255)).put((byte) Math.round(blue * 255));
         output.put((byte) Math.round(modelAlpha * 255));
-        output.putFloat(red).putFloat(green).putFloat(blue);
     }
 }
