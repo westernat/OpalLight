@@ -1,6 +1,5 @@
 package org.mesdag.opallight.impl;
 
-import com.google.gson.JsonElement;
 import com.mojang.serialization.JsonOps;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.advancements.critereon.StatePropertiesPredicate;
@@ -36,9 +35,10 @@ public class OpalDataProvider implements DataProvider {
     public void gather() {}
 
     public void addCycle(Block block) {
-        var pattern = new LightDataLoader.CyclePattern(LightDataLoader.CyclePattern.DEFAULT_COLORS, 120, 2);
+        var pattern = new LightDataLoader.CyclePattern(
+            LightDataLoader.CyclePattern.DEFAULT_COLORS, 120, 2);
         map.computeIfAbsent(block, unused -> new ArrayList<>())
-                .add(LightDataLoader.OpalData.cycle(pattern, Optional.empty()));
+            .add(LightDataLoader.OpalData.cycle(pattern, Optional.empty()));
     }
 
     public void add(Block block, OpalColor color, @Nullable StatePropertiesPredicate predicate) {
@@ -62,8 +62,7 @@ public class OpalDataProvider implements DataProvider {
         gather();
         return registries.thenCompose(provider -> {
             Path path = output.getOutputFolder(PackOutput.Target.RESOURCE_PACK).resolve(modid).resolve("opal_data").resolve(modid + ".json");
-            /// 1.20.1 的 {@code saveStable} 只接受已序列化的 JSON。
-            JsonElement json = LightDataLoader.CODEC.encodeStart(JsonOps.INSTANCE, map)
+            var json = LightDataLoader.CODEC.encodeStart(JsonOps.INSTANCE, map)
                     .getOrThrow(false, error -> OpalLight.LOGGER.error("Failed to encode opal data: {}", error));
             return DataProvider.saveStable(cachedOutput, json, path);
         });

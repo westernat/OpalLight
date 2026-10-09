@@ -1,6 +1,9 @@
 package org.mesdag.opallight.light;
 
-import com.mojang.blaze3d.vertex.*;
+import com.mojang.blaze3d.vertex.BufferBuilder;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormat;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -21,6 +24,7 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.util.FastColor;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.client.model.data.ModelData;
@@ -36,10 +40,10 @@ import java.util.function.BooleanSupplier;
 
 import static org.mesdag.opallight.light.LightMeshLayout.*;
 
-/// 负责生成不可变区块快照，并在工作线程中构建彩光网格。
 final class LightMaskMeshBuilder {
-    private static final int VERTEX_FLOATS = 10;
-    private static final int OUTPUT_VERTEX_BYTES = DefaultVertexFormat.POSITION_TEX_COLOR.getVertexSize();
+    private static final int VERTEX_FLOATS = 9;
+    static final VertexFormat VERTEX_FORMAT = LightMaskVertex.FORMAT;
+    private static final int OUTPUT_VERTEX_BYTES = VERTEX_FORMAT.getVertexSize();
     private static final int QUAD_FLOATS = VERTEX_FLOATS * 4;
     private static final byte[] EMPTY_VERTICES = new byte[0];
     private static final ThreadLocal<LightMeshColorGrid> colorScratch =
@@ -48,37 +52,52 @@ final class LightMaskMeshBuilder {
                         RenderChunkRegion[] regions, List<Long2LongOpenHashMap> colorSections,
                         BlockRenderDispatcher dispatcher, boolean shaderPackInUse) {}
 
-    /// 原始模型用于重新着色，已编码顶点用于未变化方块的批量复制；发布后均只读。
-    record BlockMesh(float[] geometry, byte[] vertices) {}
+    // 几何与顶点数组发布后只读。
+    record BlockMesh(float[] geometry, byte[] vertices, LightUpdateBounds samples, int vertexOffset) {
+        BlockMesh(float[] geometry, byte[] vertices, LightUpdateBounds samples) {
+            this(geometry, vertices, samples, -1);
+        }
+    }
 
-    /// 1.20.1 没有 {@code MeshData}，改用 {@code BufferBuilder} 的渲染缓冲直接交给 {@code VertexBuffer}。
     static final class BuiltMesh implements AutoCloseable {
         private final BufferBuilder.RenderedBuffer mesh;
-        private final Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry;
-        private boolean uploaded;
+        private final Long2ObjectOpenHashMap<BlockMesh> geometry;
+        private final boolean unchangedVertices, matchingLayout;
+        private boolean released;
 
-        BuiltMesh(BufferBuilder.RenderedBuffer mesh, Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry) {
+        BuiltMesh(BufferBuilder.RenderedBuffer mesh, Long2ObjectOpenHashMap<BlockMesh> geometry,
+                  boolean unchangedVertices, boolean matchingLayout) {
             this.mesh = mesh;
             this.geometry = geometry;
+            this.unchangedVertices = unchangedVertices;
+            this.matchingLayout = matchingLayout;
         }
 
         BufferBuilder.RenderedBuffer mesh() {
             return mesh;
         }
 
-        Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry() {
+        Long2ObjectOpenHashMap<BlockMesh> geometry() {
             return geometry;
         }
 
-        /// {@code VertexBuffer#upload} 内部已经释放渲染缓冲，避免重复释放。
+        boolean unchangedVertices() {
+            return unchangedVertices;
+        }
+
+        boolean matchingLayout() {
+            return matchingLayout;
+        }
+
+        // 1.20.1 的上传方法会释放 RenderedBuffer，包括上传失败的情况。
         void markUploaded() {
-            this.uploaded = true;
+            released = true;
         }
 
         @Override
         public void close() {
-            if (uploaded) return;
-            uploaded = true;
+            if (released) return;
+            released = true;
             mesh.release();
         }
     }
@@ -87,7 +106,6 @@ final class LightMaskMeshBuilder {
         int sx = SectionPos.x(key) << GROUP_XZ_SECTION_SHIFT;
         int sy = SectionPos.y(key) << GROUP_Y_SECTION_SHIFT;
         int sz = SectionPos.z(key) << GROUP_XZ_SECTION_SHIFT;
-        /// 颜色分段提交后不再原地修改；只捕获引用，体素裁剪与复制交给构建线程。
         List<Long2LongOpenHashMap> colorSections = new ArrayList<>();
         for (int dx = -1; dx <= 2; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
@@ -103,8 +121,6 @@ final class LightMaskMeshBuilder {
         boolean hasGeometry = false;
         for (int dx = 0; dx < 2; dx++) {
             for (int dz = 0; dz < 2; dz++) {
-                /// 1.20.1 的区域缓存只接受方块范围，参数与原版区块重建一致：
-                /// 面剔除与环境光遮蔽会查询分段外的相邻方块，必须留出一格边距并覆盖 3x3 个区块。
                 BlockPos origin = new BlockPos((sx + dx) << 4, sy << 4, (sz + dz) << 4);
                 regions[dx + dz * 2] = regionCache.createRegion(level, origin.offset(-1, -1, -1), origin.offset(16, 16, 16), 1);
                 hasGeometry |= regions[dx + dz * 2] != null;
@@ -129,17 +145,17 @@ final class LightMaskMeshBuilder {
     static @Nullable BuiltMesh build(MeshSnapshot snapshot,
                                     @Nullable Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> previousGeometry,
                                     LongSet changedBlocks, BooleanSupplier cancelled) {
-        return build(snapshot, previousGeometry, changedBlocks, cancelled, false);
+        return build(snapshot, previousGeometry, changedBlocks, cancelled, false, null);
     }
 
     static @Nullable BuiltMesh build(MeshSnapshot snapshot,
                                     @Nullable Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> previousGeometry,
-                                    LongSet changedBlocks, BooleanSupplier cancelled, boolean geometryOnly) {
+                                     LongSet changedBlocks, BooleanSupplier cancelled, boolean geometryOnly,
+                                     @Nullable LightUpdateBounds colorChanges) {
         if (cancelled.getAsBoolean()) throw new CancellationException();
         LightMeshColorGrid colors = collectColors(snapshot);
         LongArrayList candidates;
         if (geometryOnly && previousGeometry != null) {
-            /// 颜色未变时，只有变化方块及其面剔除/AO 邻域可能出现新几何。
             candidates = new LongArrayList(previousGeometry.size() + changedBlocks.size());
             candidates.addAll(previousGeometry.keySet());
             for (long pos : changedBlocks) {
@@ -149,27 +165,58 @@ final class LightMaskMeshBuilder {
             candidates = collectCandidates(snapshot.key(), colors);
         }
         if (candidates.isEmpty()) return null;
-        BufferBuilder memory = new BufferBuilder(32768);
-        memory.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX_COLOR);
+        BufferBuilder memory = new BufferBuilder(65536);
+        memory.begin(VertexFormat.Mode.QUADS, VERTEX_FORMAT);
         try {
             Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry = new Long2ObjectOpenHashMap<>();
-            BufferBuilder.RenderedBuffer mesh = buildMesh(snapshot, colors, candidates, memory, geometry, previousGeometry, changedBlocks, cancelled, geometryOnly);
+            BufferBuilder.RenderedBuffer mesh = buildMesh(snapshot, colors, candidates, memory, geometry, previousGeometry, changedBlocks,
+                cancelled, geometryOnly, colorChanges);
             if (mesh == null) {
                 memory.clear();
                 return null;
             }
-            return new BuiltMesh(mesh, geometry);
+            boolean unchanged = sameVertices(previousGeometry, geometry);
+            boolean matching = unchanged || sameLayout(previousGeometry, geometry);
+            return new BuiltMesh(mesh, geometry, unchanged, matching);
         } catch (RuntimeException | Error error) {
             memory.clear();
             throw error;
         }
     }
 
+    static boolean sameVertices(@Nullable Long2ObjectOpenHashMap<BlockMesh> previous,
+                                Long2ObjectOpenHashMap<BlockMesh> current) {
+        if (previous == null || previous.size() != current.size()) return false;
+        for (var entry : current.long2ObjectEntrySet()) {
+            BlockMesh old = previous.get(entry.getLongKey());
+            if (old == null || old.vertexOffset() != entry.getValue().vertexOffset()
+                || !java.util.Arrays.equals(old.vertices(), entry.getValue().vertices())) return false;
+        }
+        return true;
+    }
+
+    static boolean sameLayout(@Nullable Long2ObjectOpenHashMap<BlockMesh> previous,
+                              Long2ObjectOpenHashMap<BlockMesh> current) {
+        if (previous == null || previous.size() != current.size()) return false;
+        for (var entry : current.long2ObjectEntrySet()) {
+            BlockMesh old = previous.get(entry.getLongKey()), next = entry.getValue();
+            if (old == null || old.vertexOffset() < 0 || old.vertexOffset() != next.vertexOffset()
+                || old.vertices().length != next.vertices().length) return false;
+            if (old.vertices() == next.vertices()) continue;
+            for (int i = 0; i < next.vertices().length; i++) {
+                int attribute = i % OUTPUT_VERTEX_BYTES;
+                if ((attribute < 20 || attribute == 23) && old.vertices()[i] != next.vertices()[i]) return false;
+            }
+        }
+        return true;
+    }
+
     private static @Nullable BufferBuilder.RenderedBuffer buildMesh(MeshSnapshot snapshot, LightMeshColorGrid colors, LongArrayList candidates,
                                                 BufferBuilder memory,
                                                 Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry,
                                                 @Nullable Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> previousGeometry,
-                                                LongSet changedBlocks, BooleanSupplier cancelled, boolean geometryOnly) {
+                                                                    LongSet changedBlocks, BooleanSupplier cancelled, boolean geometryOnly,
+                                                                    @Nullable LightUpdateBounds colorChanges) {
         int vertexCount = 0;
         RandomSource random = RandomSource.create();
         Map<BlockState, BakedModel> modelCache = new Reference2ObjectOpenHashMap<>();
@@ -179,7 +226,7 @@ final class LightMaskMeshBuilder {
         GeometryVertexConsumer consumer = new GeometryVertexConsumer();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         float[] sampled = new float[3];
-        float[] output = new float[16];
+        float[] output = new float[12];
         EncodingScratch encoded = new EncodingScratch();
         int minX = SectionPos.x(snapshot.key()) << GROUP_XZ_BLOCK_SHIFT;
         int minY = SectionPos.y(snapshot.key()) << GROUP_Y_BLOCK_SHIFT;
@@ -189,46 +236,48 @@ final class LightMaskMeshBuilder {
             for (long packed : candidates) {
                 if (cancelled.getAsBoolean()) throw new CancellationException();
                 BlockMesh previous = previousGeometry == null ? null : previousGeometry.get(packed);
-                if (geometryOnly && previous != null && !changedBlocks.contains(packed)) {
+                if (previous != null && !changedBlocks.contains(packed)
+                    && (geometryOnly || colorChanges != null && !colorChanges.intersects(previous.samples()))) {
+                    geometry.put(packed, previous.vertexOffset() == vertexCount ? previous
+                        : new BlockMesh(previous.geometry(), previous.vertices(), previous.samples(), vertexCount));
                     vertexCount += appendVertices(memory, previous.vertices());
-                    geometry.put(packed, previous);
                     continue;
                 }
+                int blockX = BlockPos.getX(packed), blockZ = BlockPos.getZ(packed);
+                RenderChunkRegion region = snapshot.regions()[((blockX >> 4) - snapshot.sectionX())
+                    + ((blockZ >> 4) - snapshot.sectionZ()) * 2];
+                if (region == null) continue;
                 float[] blockGeometry = previous == null ? null : previous.geometry();
                 if (blockGeometry == null || changedBlocks.contains(packed)) {
                     pos.set(BlockPos.getX(packed), BlockPos.getY(packed), BlockPos.getZ(packed));
-                    int regionX = (pos.getX() >> 4) - snapshot.sectionX();
-                    int regionZ = (pos.getZ() >> 4) - snapshot.sectionZ();
-                    RenderChunkRegion region = snapshot.regions()[regionX + regionZ * 2];
-                    if (region == null) continue;
                     BlockState state = region.getBlockState(pos);
                     if (state.getRenderShape() != RenderShape.MODEL) continue;
                     if (shaper == null) shaper = dispatcher.getBlockModelShaper();
                     BakedModel model = modelCache.computeIfAbsent(state, shaper::getBlockModel);
-                    /// 1.20.1 的区域对象不直接暴露模型数据，改由区域所属的模型数据管理器读取。
-                    ModelData modelData = model.getModelData(region, pos, state, modelDataAt(region, pos));
+                    var modelData = model.getModelData(region, pos, state, modelDataAt(region, pos));
                     random.setSeed(state.getSeed(pos));
                     consumer.clear();
                     for (RenderType renderType : model.getRenderTypes(state, random, modelData)) {
-                        /// 冰、霜冰、玻璃（含染色与玻璃板）、黏液块等半透明方块同样需要彩光；
-                        /// 流体不参与模型渲染，已被上面的渲染形状检查排除，不会因此把水面点亮。
-                        /// 光影包在地形顶点着色器中移动这类几何；静态遮罩不能写入它的旧深度。
+                        // 光影会移动这类几何，静态遮罩不能沿用旧深度。
                         if (snapshot.shaderPackInUse() && isPotentiallyWaving(state, region, pos, renderType)) continue;
                         pose.pushPose();
-                        /// 模型顶点留在方块局部坐标，避免大世界坐标提前舍入。
+                        // 模型顶点留在方块局部坐标，避免大世界坐标提前舍入。
                         dispatcher.renderBatched(state, pos, region, pose, consumer, true, random, modelData, renderType);
                         pose.popPose();
                     }
                     blockGeometry = consumer.vertices();
                 }
-                byte[] vertices = colorize(blockGeometry, colors, sampled, output, encoded, packed, minX, minY, minZ);
+                byte[] vertices = encodeLightData(blockGeometry, colors, region, sampled, output, encoded, packed, minX, minY, minZ);
                 if (vertices.length != 0) {
+                    LightUpdateBounds samples = previous != null && blockGeometry == previous.geometry()
+                        ? previous.samples() : sampleBounds(blockGeometry, packed);
+                    geometry.put(packed, new BlockMesh(blockGeometry, vertices, samples, vertexCount));
                     vertexCount += appendVertices(memory, vertices);
-                    geometry.put(packed, new BlockMesh(blockGeometry, vertices));
                 }
             }
         } finally {
             ModelBlockRenderer.clearCache();
+            colors.finishSampling();
         }
         return finishMesh(memory, vertexCount);
     }
@@ -259,7 +308,7 @@ final class LightMaskMeshBuilder {
             int fromX = Math.max(x - 1, minX) - minX;
             int toX = Math.min(x + 1, minX + sizeXZ - 1) - minX + 1;
             if (fromX >= toX) continue;
-            /// 顶点插值会读取斜向体素，覆盖模型也要包含斜向相邻方块。
+            // 顶点插值会读取斜向体素，覆盖模型也要包含斜向相邻方块。
             for (int cy = Math.max(y - 1, minY); cy <= Math.min(y + 1, minY + sizeY - 1); cy++) {
                 for (int cz = Math.max(z - 1, minZ); cz <= Math.min(z + 1, minZ + sizeXZ - 1); cz++) {
                     int row = ((cy - minY) * sizeXZ + cz - minZ) * sizeXZ;
@@ -277,7 +326,8 @@ final class LightMaskMeshBuilder {
         return candidates;
     }
 
-    private static byte[] colorize(float[] vertices, LightMeshColorGrid colors,
+    private static byte[] encodeLightData(float[] vertices, LightMeshColorGrid colors,
+                                          BlockGetter view,
                                    float[] sampled, float[] output, EncodingScratch scratch,
                                    long packed, int originX, int originY, int originZ) {
         int blockX = BlockPos.getX(packed), blockY = BlockPos.getY(packed), blockZ = BlockPos.getZ(packed);
@@ -286,37 +336,51 @@ final class LightMaskMeshBuilder {
             boolean lit = false;
             for (int vertex = 0; vertex < 4; vertex++) {
                 int source = quad + vertex * VERTEX_FLOATS;
-                int target = vertex * 4;
-                sampleColor(blockX + (double) vertices[source] + vertices[source + 7],
-                        blockY + (double) vertices[source + 1] + vertices[source + 8],
-                        blockZ + (double) vertices[source + 2] + vertices[source + 9], sampled, colors);
-                float strength = Math.max(sampled[0], Math.max(sampled[1], sampled[2]));
-                int baseColor = (int) vertices[source + 5];
-                output[target] = strength > 0 ? sampled[0] / strength * ((baseColor >>> 16) & 255) / 255F : 0;
-                output[target + 1] = strength > 0 ? sampled[1] / strength * ((baseColor >>> 8) & 255) / 255F : 0;
-                output[target + 2] = strength > 0 ? sampled[2] / strength * (baseColor & 255) / 255F : 0;
-                output[target + 3] = strength * vertices[source + 6] * 0.9F;
-                lit |= output[target + 3] > 0;
+                int target = vertex * 3;
+                // 面外体素作为锚点，墙角不能从墙外斜对角借用颜色。
+                colors.sample(view, blockX + (double) vertices[source] + vertices[source + 6],
+                    blockY + (double) vertices[source + 1] + vertices[source + 7],
+                    blockZ + (double) vertices[source + 2] + vertices[source + 8],
+                    blockX + (int) Math.signum(vertices[source + 6]),
+                    blockY + (int) Math.signum(vertices[source + 7]),
+                    blockZ + (int) Math.signum(vertices[source + 8]), sampled);
+                output[target] = sampled[0];
+                output[target + 1] = sampled[1];
+                output[target + 2] = sampled[2];
+                lit |= vertices[source + 5] > 0 && (sampled[0] > 0 || sampled[1] > 0 || sampled[2] > 0);
             }
             if (!lit) continue;
             for (int vertex = 0; vertex < 4; vertex++) {
                 int source = quad + vertex * VERTEX_FLOATS;
-                int target = vertex * 4;
-                encoded.putFloat(blockX - originX + vertices[source]);
-                encoded.putFloat(blockY - originY + vertices[source + 1]);
-                encoded.putFloat(blockZ - originZ + vertices[source + 2]);
-                encoded.putFloat(vertices[source + 3]);
-                encoded.putFloat(vertices[source + 4]);
-                for (int channel = 0; channel < 4; channel++) {
-                    encoded.put((byte) (int) (output[target + channel] * 255.0F));
-                }
+                int target = vertex * 3;
+                LightMaskVertex.write(encoded, blockX - originX + vertices[source],
+                    blockY - originY + vertices[source + 1], blockZ - originZ + vertices[source + 2],
+                    vertices[source + 3], vertices[source + 4], vertices[source + 5],
+                    output[target], output[target + 1], output[target + 2]);
             }
         }
         return encoded.position() == 0 ? EMPTY_VERTICES
                 : java.util.Arrays.copyOf(encoded.array(), encoded.position());
     }
 
-    /// 一次网格构建复用编码缓冲，未受光方块不再各自分配临时数组。
+    // 采样范围必须包含模型偏移与越界顶点。
+    private static LightUpdateBounds sampleBounds(float[] vertices, long packed) {
+        int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+        for (int source = 0; source < vertices.length; source += VERTEX_FLOATS) {
+            int x = (int) Math.floor(BlockPos.getX(packed) + (double) vertices[source] + vertices[source + 6] - 0.5);
+            int y = (int) Math.floor(BlockPos.getY(packed) + (double) vertices[source + 1] + vertices[source + 7] - 0.5);
+            int z = (int) Math.floor(BlockPos.getZ(packed) + (double) vertices[source + 2] + vertices[source + 8] - 0.5);
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            minZ = Math.min(minZ, z);
+            maxX = Math.max(maxX, x + 1);
+            maxY = Math.max(maxY, y + 1);
+            maxZ = Math.max(maxZ, z + 1);
+        }
+        return new LightUpdateBounds(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
     private static final class EncodingScratch {
         private java.nio.ByteBuffer data = java.nio.ByteBuffer.allocate(0).order(java.nio.ByteOrder.nativeOrder());
 
@@ -329,21 +393,18 @@ final class LightMaskMeshBuilder {
     }
 
     private static int appendVertices(BufferBuilder memory, byte[] vertices) {
-        /// Forge 为 {@code BufferBuilder} 提供了直接写入预编码顶点的批量入口。
         memory.putBulkData(java.nio.ByteBuffer.wrap(vertices));
         return vertices.length / OUTPUT_VERTEX_BYTES;
     }
 
     private static @Nullable BufferBuilder.RenderedBuffer finishMesh(BufferBuilder memory, int vertexCount) {
-        if (vertexCount == 0) return null;
         return memory.endOrDiscardIfEmpty();
     }
 
-    /// 1.20.1 的顶点流按逐段写入，这里先把一个顶点的状态攒齐，再在 {@code endVertex} 编码。
     private static final class GeometryVertexConsumer implements VertexConsumer {
         private final FloatArrayList vertices = new FloatArrayList();
         private float x, y, z, u, v;
-        private int color = 0xFFFFFFFF;
+        private int color;
         private float nx, ny, nz;
 
         private void clear() {
@@ -354,31 +415,18 @@ final class LightMaskMeshBuilder {
             return vertices.toFloatArray();
         }
 
-        private void emit(float x, float y, float z, float red, float green, float blue, float alpha,
+        private void emit(float x, float y, float z, int color,
                           float u, float v, float nx, float ny, float nz) {
-            /// 原版已在此之前完成模型偏移、AO、方块染色和模型顶点变换。
-            /// 原版按模型面是否贴着方块边界选取相邻方块亮度，不能用整个方块的遮挡属性代替。
             float offset = faceSampleOffset(x, y, z, nx, ny, nz);
-            /// 用一个可精确表示的浮点整数保存原版顶点色，保留 AO 与植被染色。
             vertices.add(x);
             vertices.add(y);
             vertices.add(z);
             vertices.add(u);
             vertices.add(v);
-            vertices.add((float) packRgb(red, green, blue));
-            vertices.add(alpha);
+            vertices.add(FastColor.ARGB32.alpha(color) / 255F);
             vertices.add(nx * offset);
             vertices.add(ny * offset);
             vertices.add(nz * offset);
-        }
-
-        private static int packRgb(float red, float green, float blue) {
-            return channel(red) << 16 | channel(green) << 8 | channel(blue);
-        }
-
-        private static int channel(float value) {
-            int channel = Math.round(value * 255.0F);
-            return channel < 0 ? 0 : Math.min(channel, 255);
         }
 
         private float faceSampleOffset(float x, float y, float z, float nx, float ny, float nz) {
@@ -394,7 +442,8 @@ final class LightMaskMeshBuilder {
         public void vertex(float x, float y, float z, float red, float green, float blue, float alpha,
                            float texU, float texV, int overlayUV, int lightmapUV,
                            float normalX, float normalY, float normalZ) {
-            emit(x, y, z, red, green, blue, alpha, texU, texV, normalX, normalY, normalZ);
+            emit(x, y, z, FastColor.ARGB32.color((int) (alpha * 255), (int) (red * 255),
+                (int) (green * 255), (int) (blue * 255)), texU, texV, normalX, normalY, normalZ);
         }
 
         @Override
@@ -438,42 +487,16 @@ final class LightMaskMeshBuilder {
 
         @Override
         public void endVertex() {
-            emit(x, y, z,
-                    FastColor.ARGB32.red(color) / 255F, FastColor.ARGB32.green(color) / 255F,
-                    FastColor.ARGB32.blue(color) / 255F, FastColor.ARGB32.alpha(color) / 255F,
-                    u, v, nx, ny, nz);
+            emit(x, y, z, color, u, v, nx, ny, nz);
         }
 
         @Override
-        public void defaultColor(int red, int green, int blue, int alpha) {}
+        public void defaultColor(int red, int green, int blue, int alpha) {
+            color(red, green, blue, alpha);
+        }
 
         @Override
         public void unsetDefaultColor() {}
-    }
-
-    private static void sampleColor(double x, double y, double z, float[] result, LightMeshColorGrid colors) {
-        double gx = x - 0.5, gy = y - 0.5, gz = z - 0.5;
-        int bx = (int) Math.floor(gx), by = (int) Math.floor(gy), bz = (int) Math.floor(gz);
-        float fx = (float) (gx - bx), fy = (float) (gy - by), fz = (float) (gz - bz);
-        result[0] = result[1] = result[2] = 0;
-        for (int dx = 0; dx <= 1; dx++) {
-            float wx = dx == 0 ? 1 - fx : fx;
-            if (wx == 0) continue;
-            for (int dy = 0; dy <= 1; dy++) {
-                float wy = dy == 0 ? 1 - fy : fy;
-                if (wy == 0) continue;
-                for (int dz = 0; dz <= 1; dz++) {
-                    float wz = dz == 0 ? 1 - fz : fz;
-                    if (wz == 0) continue;
-                    long color = colors.get(bx + dx, by + dy, bz + dz);
-                    if (color == 0) continue;
-                    float weight = wx * wy * wz;
-                    result[0] += LightColorCache.channel(color, 32) * weight;
-                    result[1] += LightColorCache.channel(color, 16) * weight;
-                    result[2] += LightColorCache.channel(color, 0) * weight;
-                }
-            }
-        }
     }
 
 }

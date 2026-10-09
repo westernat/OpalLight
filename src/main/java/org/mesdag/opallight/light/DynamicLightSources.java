@@ -10,9 +10,8 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 
-/// 将玩家双手和掉落的发光方块物品转换为当前刻的彩光源。
 final class DynamicLightSources {
-    /// 客户端线程逐刻复用；传播器只在发生变化时复制结果。
+    // 客户端线程逐刻复用；传播器只在发生变化时复制结果。
     private static final Int2ObjectOpenHashMap<LightSource> current = new Int2ObjectOpenHashMap<>();
 
     private DynamicLightSources() {}

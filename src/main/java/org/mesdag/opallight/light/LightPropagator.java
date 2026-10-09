@@ -34,7 +34,7 @@ public final class LightPropagator {
     private static final Long2ObjectOpenHashMap<List<LightSource>> dynamicByChunk = new Long2ObjectOpenHashMap<>();
     private static final LongOpenHashSet pendingChunks = new LongOpenHashSet();
     private static final LongOpenHashSet dynamicPendingChunks = new LongOpenHashSet();
-    /// 仅局部更新保存高度分段；缺少条目表示整根区块柱需要重算。
+    // 仅局部更新保存高度分段；缺少条目表示整根区块柱需要重算。
     private static final Long2ObjectOpenHashMap<LongOpenHashSet> pendingSections = new Long2ObjectOpenHashMap<>();
     private static final Long2LongOpenHashMap chunkVersions = new Long2LongOpenHashMap();
     private static final ExecutorService propagationWorker = Executors.newSingleThreadExecutor(task -> {
@@ -125,7 +125,7 @@ public final class LightPropagator {
         for (long pos : old.keySet()) cyclingStaticSources.remove(pos);
     }
 
-    /// 动态光源按实体和手槽跟踪；一次替换同时标记旧位置和新位置，避免移动残影。
+    // 动态光源按实体和手槽跟踪；一次替换同时标记旧位置和新位置，避免移动残影。
     static int replaceDynamicSources(Int2ObjectMap<LightSource> current) {
         int changed = 0;
         for (var entry : dynamicSources.int2ObjectEntrySet()) {
@@ -137,7 +137,7 @@ public final class LightPropagator {
         for (var entry : current.int2ObjectEntrySet()) {
             LightSource old = dynamicSources.get(entry.getIntKey());
             if (entry.getValue().equals(old)) continue;
-            /// 同位置同半径的颜色变化已在旧源范围入队，不再重复合并九个区块。
+            // 同位置同半径的颜色变化已在旧源范围入队，不再重复合并九个区块。
             if (old == null || old.pos() != entry.getValue().pos() || old.emission() != entry.getValue().emission()) {
                 scheduleAround(BlockPos.of(entry.getValue().pos()), entry.getValue().emission(), true);
             }
@@ -157,8 +157,8 @@ public final class LightPropagator {
 
     private static void prioritizeDynamicPropagation() {
         ActiveBatch previous = activeBatch;
-        if (previous == null || previous.future().isDone()) return;
-        /// 原批次未完成时保留全部目标和高度范围，再让动态光先计算。
+        if (previous == null || previous.dynamic() || previous.future().isDone()) return;
+        // 原批次未完成时保留全部目标和高度范围，再让动态光先计算。
         previous.snapshot().cancel();
         for (long key : previous.versions().keySet()) {
             LongOpenHashSet oldSections = previous.snapshot().targetSections(key);
@@ -204,7 +204,7 @@ public final class LightPropagator {
         long gameTime = level.getGameTime();
         if (gameTime == lastCycleTick) return;
         lastCycleTick = gameTime;
-        /// 周期更新不能反复取消尚未完成的传播快照。
+        // 周期更新不能反复取消尚未完成的传播快照。
         if (activeBatch != null) return;
         for (var entry : cyclingStaticSources.long2ObjectEntrySet()) {
             var pattern = entry.getValue().left().cycle();
@@ -239,7 +239,7 @@ public final class LightPropagator {
                     for (int sy = (pos.getY() - vertical) >> 4; sy <= (pos.getY() + vertical) >> 4; sy++) {
                         sections.add(SectionPos.asLong(cx + dx, sy, cz + dz));
                     }
-                    scheduleChunk(cx + dx, cz + dz, sections);
+                    scheduleChunk(cx + dx, cz + dz, sections, dynamic);
                     if (dynamic) dynamicPendingChunks.add(ChunkPos.asLong(cx + dx, cz + dz));
                 }
             }
@@ -259,28 +259,46 @@ public final class LightPropagator {
     }
 
     private static void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections) {
+        scheduleChunk(cx, cz, sections, false);
+    }
+
+    private static void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections, boolean dynamic) {
         long key = ChunkPos.asLong(cx, cz);
-        if (pendingChunks.add(key)) {
-            if (activeBatch != null && activeBatch.versions().containsKey(key)) {
-                /// 整个区块版本会失效，重算必须包含旧任务尚未提交的所有高度。
-                var activeSections = activeBatch.snapshot().targetSections(key);
-                if (sections == null || activeSections == null) sections = null;
-                else sections.addAll(activeSections);
+        boolean added = pendingChunks.add(key);
+        boolean activeTarget = activeBatch != null && activeBatch.versions().containsKey(key);
+        // 移动只合并下一批更新；当前动态快照及已完成的静态快照允许先发布一次。
+        boolean deferred = dynamic && activeTarget && (activeBatch.dynamic() || activeBatch.future().isDone());
+        if (activeTarget) {
+            var activeSections = activeBatch.snapshot().targetSections(key);
+            if (sections == null || activeSections == null) sections = null;
+            else sections.addAll(activeSections);
+            if (!deferred && chunkVersions.get(key) == activeBatch.versions().get(key)) {
+                chunkVersions.addTo(key, 1);
                 activeBatch.snapshot().invalidateTarget(key);
             }
-            if (sections != null) pendingSections.put(key, sections);
+        } else if (added) {
             chunkVersions.addTo(key, 1);
-            if (activeBatch != null && activeBatch.versions().containsKey(key)
-                    && pendingChunks.containsAll(activeBatch.versions().keySet())) {
-                /// 所有目标都已重新排队，旧批次已不可能提交任何结果。
-                activeBatch.snapshot().cancel();
-                activeBatch = null;
-            }
+        }
+        if (added) {
+            if (sections != null) pendingSections.put(key, sections);
         } else if (sections == null) {
             pendingSections.remove(key);
         } else {
             var pending = pendingSections.get(key);
             if (pending != null) pending.addAll(sections);
+        }
+        if (activeTarget && !deferred) {
+            boolean validTarget = false;
+            for (var entry : activeBatch.versions().long2LongEntrySet()) {
+                if (chunkVersions.get(entry.getLongKey()) == entry.getLongValue()) {
+                    validTarget = true;
+                    break;
+                }
+            }
+            if (!validTarget) {
+                activeBatch.snapshot().cancel();
+                activeBatch = null;
+            }
         }
     }
 
@@ -361,7 +379,7 @@ public final class LightPropagator {
             activeBatch = null;
             if (finished.level() == level) commit = commitAsync(level, finished);
         }
-        /// 下一份快照必须在调用方发布本次颜色结果后才能捕获旧颜色。
+        // 下一份快照必须在调用方发布本次颜色结果后才能捕获旧颜色。
         if (commit != null) return commit;
         if (pendingChunks.isEmpty()) return commit;
         boolean dynamicBatch = !dynamicPendingChunks.isEmpty();
@@ -383,13 +401,14 @@ public final class LightPropagator {
             pendingSections.putAll(sections);
             return commit;
         }
-        /// 没有光源且没有旧颜色需要清除时，不产生工作线程任务。
+        // 没有光源且没有旧颜色需要清除时，不产生工作线程任务。
         if (snapshot.isEmpty()) {
             for (long key : requested) chunkVersions.remove(key);
             return commit;
         }
         activeBatch = new ActiveBatch(level, versions, snapshot,
-                CompletableFuture.supplyAsync(snapshot::compute, dynamicBatch ? dynamicWorker : propagationWorker), dynamicBatch);
+            CompletableFuture.supplyAsync(snapshot::compute,
+                dynamicBatch ? dynamicWorker : propagationWorker), dynamicBatch);
         return commit;
     }
 
@@ -398,7 +417,7 @@ public final class LightPropagator {
         int centerX = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockX() >> 4;
         int centerZ = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockZ() >> 4;
         boolean dynamicBatch = !dynamicPendingChunks.isEmpty();
-        /// 动态光仅排序自己的待处理区块，避免在世界加载期间反复排序静态积压任务。
+        // 动态光仅排序自己的待处理区块，避免在世界加载期间反复排序静态积压任务。
         LongArrayList nearest = new LongArrayList(dynamicBatch ? dynamicPendingChunks : pendingChunks);
         if (dynamicBatch) firstMeshPending = false;
         nearest.sort((a, b) -> {
@@ -407,7 +426,7 @@ public final class LightPropagator {
             return Long.compare(ax * ax + az * az, bx * bx + bz * bz);
         });
         nearest = prioritizeLoadedNeighborhood(nearest);
-        /// 已有颜色结果时优先补齐可见实体分段，避免继续处理近处空中区块。
+        // 已有颜色结果时优先补齐可见实体分段，避免继续处理近处空中区块。
         OptionalLong preferred = firstMeshPending ? preferredGroup : OptionalLong.empty();
         boolean anchored = preferred.isPresent();
         int groupX = anchored ? SectionPos.x(preferred.getAsLong()) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT : 0;
@@ -426,7 +445,7 @@ public final class LightPropagator {
                 continue;
             }
             if (firstMeshPending && !anchored) {
-                /// 首屏优先完成最近网格及其采样边界，范围与网格的传播等待条件一致。
+                // 首屏优先完成最近网格及其采样边界，范围与网格的传播等待条件一致。
                 groupX = (cx >> LightMeshLayout.GROUP_XZ_SECTION_SHIFT) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
                 groupZ = (cz >> LightMeshLayout.GROUP_XZ_SECTION_SHIFT) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
                 anchored = true;
@@ -454,7 +473,7 @@ public final class LightPropagator {
             if (ready) ordered.add(key);
             else frontier.set(i);
         }
-        /// 邻域已索引的区块先计算，边缘任务仍补入本批，不等待后续加载。
+        // 邻域已索引的区块先计算，边缘任务仍补入本批，不等待后续加载。
         for (int i = frontier.nextSetBit(0); i >= 0; i = frontier.nextSetBit(i + 1)) {
             ordered.add(nearest.getLong(i));
         }
@@ -488,5 +507,6 @@ public final class LightPropagator {
         }
         return updates.isEmpty() ? null : new Commit(updates, finished.dynamic());
     }
+
 
 }

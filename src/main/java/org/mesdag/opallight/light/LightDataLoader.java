@@ -4,13 +4,11 @@ import com.google.common.collect.ImmutableMap;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.mojang.datafixers.util.Either;
-import com.mojang.serialization.Codec;
-import com.mojang.serialization.DataResult;
-import com.mojang.serialization.Dynamic;
-import com.mojang.serialization.JsonOps;
+import com.mojang.serialization.*;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import net.minecraft.advancements.critereon.StatePropertiesPredicate;
+import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.ResourceManager;
@@ -28,24 +26,54 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 public final class LightDataLoader extends SimpleJsonResourceReloadListener {
     public static final LightDataLoader INSTANCE = new LightDataLoader();
+
+    private static final class CodecCompatibility {
+        // 1.21 的可选字段只在缺失时使用默认值，不能吞掉已填写字段的解析错误。
+        private static <A> MapCodec<Optional<A>> strictOptional(Codec<A> codec, String name) {
+            return new MapCodec<>() {
+                @Override
+                public <T> DataResult<Optional<A>> decode(DynamicOps<T> ops, MapLike<T> input) {
+                    T value = input.get(name);
+                    return value == null ? DataResult.success(Optional.empty()) : codec.parse(ops, value).map(Optional::of);
+                }
+
+                @Override
+                public <T> RecordBuilder<T> encode(Optional<A> input, DynamicOps<T> ops, RecordBuilder<T> prefix) {
+                    if (input.isPresent()) return prefix.add(name, codec.encodeStart(ops, input.get()));
+                    return prefix;
+                }
+
+                @Override
+                public <T> Stream<T> keys(DynamicOps<T> ops) {
+                    return Stream.of(ops.createString(name));
+                }
+            };
+        }
+
+        private static <A> MapCodec<A> strictOptional(Codec<A> codec, String name, A fallback) {
+            return strictOptional(codec, name).xmap(value -> value.orElse(fallback),
+                value -> value.equals(fallback) ? Optional.empty() : Optional.of(value));
+        }
+    }
 
     public record CyclePattern(List<OpalColor> colors, int periodTicks, int updateIntervalTicks) {
         public static final List<OpalColor> DEFAULT_COLORS = List.of(
             OpalColor.of(0xFF0000), OpalColor.of(0xFFFF00), OpalColor.of(0x00FF00),
             OpalColor.of(0x00FFFF), OpalColor.of(0x0000FF), OpalColor.of(0xFF00FF));
-        /// 1.20.1 的 Codec.list 没有长度约束重载。
+        // 1.20.1 的 Codec.list 没有长度约束重载。
         private static final Codec<List<OpalColor>> COLORS_CODEC = Codec.list(OpalColor.CODEC).comapFlatMap(
             colors -> colors.size() >= 2 && colors.size() <= 16
                 ? DataResult.success(colors)
                 : DataResult.error(() -> "Expected 2-16 colors, got " + colors.size()),
             Function.identity());
         public static final Codec<CyclePattern> CODEC = RecordCodecBuilder.create(instance -> instance.group(
-            COLORS_CODEC.optionalFieldOf("colors", DEFAULT_COLORS).forGetter(CyclePattern::colors),
-            Codec.intRange(20, 1200).optionalFieldOf("period_ticks", 120).forGetter(CyclePattern::periodTicks),
-            Codec.intRange(1, 20).optionalFieldOf("update_interval_ticks", 2).forGetter(CyclePattern::updateIntervalTicks)
+            CodecCompatibility.strictOptional(COLORS_CODEC, "colors", DEFAULT_COLORS).forGetter(CyclePattern::colors),
+            CodecCompatibility.strictOptional(Codec.intRange(20, 1200), "period_ticks", 120).forGetter(CyclePattern::periodTicks),
+            CodecCompatibility.strictOptional(Codec.intRange(1, 20), "update_interval_ticks", 2).forGetter(CyclePattern::updateIntervalTicks)
         ).apply(instance, CyclePattern::new));
 
         public CyclePattern {
@@ -55,16 +83,27 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
 
     public record OpalData(OpalColor color, Optional<StatePropertiesPredicate> statePredicate,
                            Optional<CyclePattern> cycle) {
-        /// 1.20.1 的 {@code StatePropertiesPredicate} 还没有 Codec，用原生 JSON 桥接。
-        /// 必须声明在 {@link #DIRECT_CODEC} 之前：该记录类可能先于外层类被初始化。
-        private static final Codec<StatePropertiesPredicate> STATE_CODEC = Codec.PASSTHROUGH.xmap(
+        // 旧版 JSON 解析更宽松；先按 1.21 的状态值类型校验，再交给原版构建谓词。
+        private static final Codec<StatePropertiesPredicate> STATE_CODEC = Codec.PASSTHROUGH.comapFlatMap(
                 dynamic -> {
-                    StatePropertiesPredicate predicate = StatePropertiesPredicate.fromJson(
-                            dynamic.convert(JsonOps.INSTANCE).getValue());
-                    return predicate == null ? StatePropertiesPredicate.ANY : predicate;
-                },
-                predicate -> new Dynamic<>(JsonOps.INSTANCE, predicate.serializeToJson()));
+                    JsonElement json = dynamic.convert(JsonOps.INSTANCE).getValue();
+                    if (!json.isJsonObject()) return DataResult.error(() -> "Expected state object");
+                    for (JsonElement value : json.getAsJsonObject().asMap().values()) {
+                        if (!validStateValue(value)) return DataResult.error(() -> "Expected string or string range");
+                    }
+                    return DataResult.success(StatePropertiesPredicate.fromJson(json));
+                }, predicate -> new Dynamic<>(JsonOps.INSTANCE, predicate.serializeToJson()));
 
+        private static boolean validStateValue(JsonElement value) {
+            if (value.isJsonPrimitive()) return value.getAsJsonPrimitive().isString();
+            if (!value.isJsonObject()) return false;
+            for (String key : List.of("min", "max")) {
+                JsonElement bound = value.getAsJsonObject().get(key);
+                if (bound != null && !bound.isJsonNull() && (!bound.isJsonPrimitive() || !bound.getAsJsonPrimitive().isString()))
+                    return false;
+            }
+            return true;
+        }
         private record Raw(Optional<OpalColor> color, Optional<StatePropertiesPredicate> statePredicate,
                            Optional<CyclePattern> cycle) {
         }
@@ -78,9 +117,9 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
         }
 
         private static final Codec<Raw> RAW_CODEC = RecordCodecBuilder.create(instance -> instance.group(
-            OpalColor.CODEC.optionalFieldOf("color").forGetter(Raw::color),
+            CodecCompatibility.strictOptional(OpalColor.CODEC, "color").forGetter(Raw::color),
             STATE_CODEC.optionalFieldOf("state").forGetter(Raw::statePredicate),
-            CyclePattern.CODEC.optionalFieldOf("cycle").forGetter(Raw::cycle)
+            CodecCompatibility.strictOptional(CyclePattern.CODEC, "cycle").forGetter(Raw::cycle)
         ).apply(instance, Raw::new));
         public static final Codec<OpalData> DIRECT_CODEC = RAW_CODEC.comapFlatMap(raw -> {
             if (raw.color().isPresent() == raw.cycle().isPresent()) {
@@ -101,7 +140,7 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
         }
     }
 
-    /// 1.20.1 的 DataFixerUpper 没有 {@code Codec#lazyInitialized}。
+    // 1.20.1 的 DataFixerUpper 没有 {@code Codec#lazyInitialized}。
     public static final Codec<Map<Block, List<OpalData>>> CODEC = createCodec();
 
     private static Codec<Map<Block, List<OpalData>>> createCodec() {
@@ -109,7 +148,8 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
                 either -> either.map(List::of, Function.identity()),
                 list -> list.size() == 1 ? Either.left(list.get(0)) : Either.right(list)
         );
-        return Codec.unboundedMap(BuiltInRegistries.BLOCK.byNameCodec(), listCodec);
+        Codec<Block> blockCodec = BuiltInRegistries.BLOCK.holderByNameCodec().xmap(Holder::value, BuiltInRegistries.BLOCK::wrapAsHolder);
+        return Codec.unboundedMap(blockCodec, listCodec);
     }
 
     private Map<Block, List<OpalData>> dataByBlock = ImmutableMap.of();
@@ -118,7 +158,7 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
         List<OpalData> list = dataByBlock.get(state.getBlock());
         if (list == null) return null;
         for (OpalData data : list) {
-            /// 循环光源没有固定的 RGB 值。
+            // 循环光源没有固定的 RGB 值。
             if (data.matches(state)) return data.cycle().isPresent() ? null : data.color();
         }
         return null;
@@ -139,10 +179,10 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
 
     @Override
     protected void apply(Map<ResourceLocation, JsonElement> map, ResourceManager manager, ProfilerFiller filler) {
-        /// 1.20.1 没有按条件解析 JSON 的 DynamicOps，彩光定义直接按普通 JSON 读取。
+        // 1.20.1 没有按条件解析 JSON 的 DynamicOps，彩光定义直接按普通 JSON 读取。
         Map<Block, List<OpalData>> mutable = new Reference2ObjectOpenHashMap<>();
         for (var entry : map.entrySet()) {
-            /// 1.20.1 的 DataResult 只有 {@code result()}/{@code error()} 两个 Optional 出口。
+            // 1.20.1 的 DataResult 只有 {@code result()}/{@code error()} 两个 Optional 出口。
             var result = CODEC.parse(JsonOps.INSTANCE, entry.getValue());
             result.error().ifPresent(error -> OpalLight.LOGGER.error("Invalid colored light definition {}: {}", entry.getKey(), error.message()));
             result.result().ifPresent(mutable::putAll);

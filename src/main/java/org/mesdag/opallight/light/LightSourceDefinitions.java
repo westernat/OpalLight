@@ -10,7 +10,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.Map;
 
-/// 解析后的彩光定义及方块状态查询缓存。
 final class LightSourceDefinitions {
     private static final Map<BlockState, LightProfile> colorCache = new Reference2ObjectOpenHashMap<>();
 

@@ -11,6 +11,9 @@ uniform mat4 ProjMat;
 uniform int FogShape;
 
 uniform vec3 GroupOffset;
+uniform samplerBuffer PreviousColors;
+uniform int BlendVertexColors;
+uniform float TransitionWeight;
 
 out float vertexDistance;
 out vec2 texCoord0;
@@ -21,5 +24,9 @@ void main() {
     gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
     vertexDistance = fog_distance(ModelViewMat, pos, FogShape);
     texCoord0 = UV0;
-    vertexColor = Color;
+vertexColor = Color;
+if (BlendVertexColors != 0) {
+// 每个顶点占六个 RGBA8 纹素，最后一个保存颜色。
+vertexColor = mix(texelFetch(PreviousColors, gl_VertexID * 6 + 5), Color, TransitionWeight);
+}
 }
