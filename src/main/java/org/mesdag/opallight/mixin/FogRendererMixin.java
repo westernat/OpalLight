@@ -2,7 +2,7 @@ package org.mesdag.opallight.mixin;
 
 import com.llamalad7.mixinextras.sugar.Local;
 import net.minecraft.client.renderer.FogRenderer;
-import org.mesdag.opallight.light.LightManager;
+import org.mesdag.opallight.light.render.LightManager;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
