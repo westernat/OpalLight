@@ -1,4 +1,4 @@
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.render;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -8,8 +8,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import org.jetbrains.annotations.Nullable;
+import org.mesdag.opallight.light.engine.LightMeshLayout;
 
-/// 缓存方块模型，使彩光变化时只重新生成顶点颜色。
 final class LightMaskMeshParts {
     private final Long2ObjectOpenHashMap<LongOpenHashSet> rebuildBlocks = new Long2ObjectOpenHashMap<>();
     private final Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh>> geometryCache = new Long2ObjectOpenHashMap<>();

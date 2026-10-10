@@ -9,6 +9,7 @@ uniform float FogEnd;
 uniform vec4 FogColor;
 
 uniform float TransitionWeight;
+uniform int BlendVertexColors;
 
 in float vertexDistance;
 in vec2 texCoord0;
@@ -20,6 +21,7 @@ void main() {
     float fogFade = mix(1.0, linear_fog_fade(vertexDistance, FogStart, FogEnd), FogColor.a);
     if (fogFade <= 0.0) discard;
     vec4 texColor = texture(Sampler0, texCoord0);
-    if (texColor.a < 0.1) discard;
-    fragColor = vec4(texColor.rgb * vertexColor.rgb * vertexColor.a * texColor.a * fogFade * TransitionWeight, 1.0);
+if (texColor.a < 0.01) discard;
+fragColor = vec4(texColor.rgb * vertexColor.rgb * vertexColor.a
+* 0.9 * texColor.a * fogFade * (BlendVertexColors != 0 ? 1.0: TransitionWeight), 1.0);
 }

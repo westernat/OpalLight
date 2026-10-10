@@ -5,6 +5,22 @@
         { "name": "Sampler0" }
     ],
     "uniforms": [
+        {
+            "name": "PreviousColors",
+            "type": "int",
+            "count": 1,
+            "values": [
+                1
+            ]
+        },
+        {
+            "name": "BlendVertexColors",
+            "type": "int",
+            "count": 1,
+            "values": [
+                0
+            ]
+        },
         { "name": "ModelViewMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
         { "name": "ProjMat", "type": "matrix4x4", "count": 16, "values": [ 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0 ] },
         { "name": "GroupOffset", "type": "float", "count": 3, "values": [ 0.0, 0.0, 0.0 ] },

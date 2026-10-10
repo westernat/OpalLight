@@ -6,9 +6,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
-import org.mesdag.opallight.light.LightColorCache;
-import org.mesdag.opallight.light.LightMaskMeshCache;
-import org.mesdag.opallight.light.LightPropagator;
+import org.mesdag.opallight.light.engine.LightColorCache;
+import org.mesdag.opallight.light.engine.LightPropagator;
+import org.mesdag.opallight.light.render.LightMaskMeshCache;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -27,7 +27,7 @@ public class LevelChunkMixin {
             @Local(argsOnly = true) BlockState state
     ) {
         if (level.isClientSide) {
-            /// 光源移除后旧几何仍可能留在缓存中，方块变化不能依赖当前是否有彩光。
+            // 光源移除后旧几何仍可能留在缓存中，方块变化不能依赖当前是否有彩光。
             LightMaskMeshCache.invalidateChangedGeometry(pos.asLong());
             long key = LightColorCache.sectionKey(pos);
             boolean affected = LightPropagator.isNearAffectedSection(key);

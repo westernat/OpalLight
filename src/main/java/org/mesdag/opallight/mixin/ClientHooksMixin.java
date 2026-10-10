@@ -2,7 +2,7 @@ package org.mesdag.opallight.mixin;
 
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.neoforged.neoforge.client.ClientHooks;
-import org.mesdag.opallight.light.FirstPersonLight;
+import org.mesdag.opallight.light.render.FirstPersonLight;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyArg;

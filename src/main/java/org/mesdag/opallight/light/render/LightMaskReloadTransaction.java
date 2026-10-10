@@ -1,4 +1,4 @@
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.render;
 
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -7,7 +7,7 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.world.phys.AABB;
 import org.jetbrains.annotations.Nullable;
 
-/// 仅暂存彩光定义变更涉及的网格，并在可见部分准备完成后一次提交。
+// 仅暂存彩光定义变更涉及的网格，并在可见部分准备完成后一次提交。
 final class LightMaskReloadTransaction implements AutoCloseable {
     private record Ready(@Nullable VertexBuffer buffer,
                          @Nullable Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> geometry) {}

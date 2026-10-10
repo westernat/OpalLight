@@ -1,10 +1,10 @@
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.color;
 
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.DataResult;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
-import net.minecraft.util.FastColor;
 import net.minecraft.util.FastColor.ARGB32;
+import net.minecraft.util.FastColor;
 import net.neoforged.neoforge.common.util.NeoForgeExtraCodecs;
 
 import java.util.List;

@@ -1,4 +1,4 @@
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.engine;
 
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -17,13 +17,14 @@ import net.minecraft.world.level.chunk.LightChunk;
 import net.minecraft.world.level.chunk.PalettedContainer;
 import net.minecraft.world.level.material.FluidState;
 import org.jetbrains.annotations.Nullable;
+import org.mesdag.opallight.light.data.LightProfile;
 
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 
-/// 在客户端线程复制传播所需的方块状态，工作线程只读取此快照。
+// 在客户端线程复制传播所需的方块状态，工作线程只读取此快照。
 final class LightPropagationSnapshot implements BlockGetter {
     private record ChunkSections(PalettedContainer<BlockState>[] states, BitSet copied) {
         @Nullable BlockState get(BlockPos pos, int minSection) {
@@ -37,7 +38,7 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     private final Long2ObjectOpenHashMap<ChunkSections> chunks;
     private final LongOpenHashSet targets;
-    /// 主线程发布替换集合，工作线程不读取正在修改的哈希表。
+    // 主线程发布替换集合，工作线程不读取正在修改的哈希表。
     private volatile LongOpenHashSet remainingTargets;
     private final Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections;
     private final List<LightSource> sources;
@@ -94,9 +95,9 @@ final class LightPropagationSnapshot implements BlockGetter {
     }
 
     static LightPropagationSnapshot capture(Level level, LongOpenHashSet requested,
-            Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
+                                            Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
                                             Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<LightProfile>>> indexedSources,
-            Long2ObjectOpenHashMap<List<LightSource>> dynamicSources) {
+                                            Long2ObjectOpenHashMap<List<LightSource>> dynamicSources) {
         LongOpenHashSet targets = new LongOpenHashSet(requested);
         LongOpenHashSet scanned = new LongOpenHashSet();
         for (long chunkKey : targets) {
@@ -160,7 +161,7 @@ final class LightPropagationSnapshot implements BlockGetter {
         int radius = emission - 1;
         int margin = 2;
         int minSection = minHeight >> 4;
-        /// 可达体素的曼哈顿范围，加两格相邻状态查询余量；避免复制立方体角落的无关分段。
+        // 可达体素的曼哈顿范围，加两格相邻状态查询余量；避免复制立方体角落的无关分段。
         for (int cx = (x - radius - margin) >> 4; cx <= (x + radius + margin) >> 4; cx++) {
             int dx = Math.max(0, Math.max((cx << 4) - x, x - (cx << 4) - 15) - margin);
             for (int cz = (z - radius - margin) >> 4; cz <= (z + radius + margin) >> 4; cz++) {
@@ -171,13 +172,13 @@ final class LightPropagationSnapshot implements BlockGetter {
                 int toY = Math.min(maxHeight - 1, y + vertical + margin) >> 4;
                 if (fromY > toY) continue;
                 neededSections.computeIfAbsent(ChunkPos.asLong(cx, cz), unused -> new BitSet())
-                        .set(fromY - minSection, toY - minSection + 1);
+                    .set(fromY - minSection, toY - minSection + 1);
             }
         }
     }
 
     private static boolean canReachTarget(long source, int emission, LongOpenHashSet targets,
-                                         Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections) {
+                                          Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections) {
         int x = BlockPos.getX(source), y = BlockPos.getY(source), z = BlockPos.getZ(source);
         for (int cx = (x - emission + 1) >> 4; cx <= (x + emission - 1) >> 4; cx++) {
             int minX = cx << 4;
@@ -258,12 +259,12 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     LightPropagationSolver.Result computeLive(Level level) {
         return LightPropagationSolver.compute(this, level, key -> level.getChunkSource().getChunkForLighting(
-                ChunkPos.getX(key), ChunkPos.getZ(key)) != null, false);
+            ChunkPos.getX(key), ChunkPos.getZ(key)) != null, false);
     }
 
     @Override
     public @Nullable BlockEntity getBlockEntity(BlockPos pos) {
-        /// 依赖方块实体的动态遮挡必须回到客户端线程计算。
+        // 依赖方块实体的动态遮挡必须回到客户端线程计算。
         unsupported = true;
         return null;
     }

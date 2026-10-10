@@ -1,12 +1,14 @@
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.render;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.util.FastColor;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.mesdag.opallight.light.engine.LightColorCache;
 
-/// 在实体原有顶点流中加入彩光，保留其纹理、深度和渲染层。
 public final class ColoredLightBufferSource implements MultiBufferSource {
     private final MultiBufferSource delegate;
     private final @Nullable Vec3 cameraPos;
@@ -30,31 +32,38 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
     }
 
     public static VertexConsumer wrapFixed(VertexConsumer output, long color) {
-        return hasTint(color) ? new ColoredVertexConsumer(output, null, color) : output;
+        return color != 0 ? new ColoredVertexConsumer(output, null, color) : output;
     }
 
-    public static boolean hasTint(long color) {
-        long red = color >>> 32 & 65535L;
-        long green = color >>> 16 & 65535L;
-        long blue = color & 65535L;
-        return red != green || green != blue;
+    static VertexConsumer wrapFixed(VertexConsumer output, long color, float skyBrightness, float ambientLight) {
+        return color != 0 ? new ColoredVertexConsumer(output, null, color, skyBrightness, ambientLight) : output;
     }
 
     private static final class ColoredVertexConsumer implements VertexConsumer {
         private final VertexConsumer output;
         private final @Nullable Vec3 cameraPos;
         private float red = 1.0F, green = 1.0F, blue = 1.0F;
+        private float strength;
+        private final float skyBrightness, ambientLight;
 
         private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor) {
+            this(output, cameraPos, fixedColor,
+                    LightBrightness.skyBrightness(Minecraft.getInstance() == null ? null : Minecraft.getInstance().level),
+                    LightBrightness.ambientLight(Minecraft.getInstance() == null ? null : Minecraft.getInstance().level));
+        }
+
+        private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor,
+                                      float skyBrightness, float ambientLight) {
             this.output = output;
             this.cameraPos = cameraPos;
+            this.skyBrightness = skyBrightness;
+            this.ambientLight = ambientLight;
             if (cameraPos == null) updateColor(fixedColor);
         }
 
         @Override
         public VertexConsumer addVertex(float x, float y, float z) {
-            if (cameraPos != null)
-                updateColor(LightColorCache.INSTANCE.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z));
+            sampleAt(x, y, z);
             output.addVertex(x, y, z);
             return this;
         }
@@ -63,15 +72,16 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
             float r = LightColorCache.channel(color, 32);
             float g = LightColorCache.channel(color, 16);
             float b = LightColorCache.channel(color, 0);
-            float strength = Math.max(r, Math.max(g, b));
-            red = 1.0F - 0.35F * (strength - r);
-            green = 1.0F - 0.35F * (strength - g);
-            blue = 1.0F - 0.35F * (strength - b);
+            strength = Math.max(r, Math.max(g, b));
+            float tint = LightBrightness.TINT_INTENSITY * LightFalloff.edgeOpacity(strength);
+            red = 1.0F - tint * (strength - r);
+            green = 1.0F - tint * (strength - g);
+            blue = 1.0F - tint * (strength - b);
         }
 
         @Override
         public VertexConsumer setColor(int r, int g, int b, int a) {
-            output.setColor(Math.round(r * red), Math.round(g * green), Math.round(b * blue), a);
+            output.setColor(tintedColor(FastColor.ARGB32.color(a, r, g, b)));
             return this;
         }
 
@@ -89,7 +99,8 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
         @Override
         public VertexConsumer setUv2(int u, int v) {
-            output.setUv2(u, v);
+            // 限制彩光亮度并按天空光衰减，避免在原版天空光之上额外加亮。
+            output.setUv2(blockLight(u, v), v);
             return this;
         }
 
@@ -101,7 +112,26 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
         @Override
         public void addVertex(float x, float y, float z, int color, float u, float v, int packedOverlay, int packedLight, float normalX, float normalY, float normalZ) {
-            output.addVertex(x, y, z, color, u, v, packedOverlay, packedLight, normalX, normalY, normalZ);
+            sampleAt(x, y, z);
+            int sky = packedLight >>> 16;
+            int light = packedLight & 0xFFFF0000 | blockLight(packedLight & 0xFFFF, sky);
+            output.addVertex(x, y, z, tintedColor(color), u, v, packedOverlay, light, normalX, normalY, normalZ);
+        }
+
+        private void sampleAt(float x, float y, float z) {
+            if (cameraPos != null)
+                updateColor(LightColorCache.INSTANCE.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z));
+        }
+
+        private int tintedColor(int color) {
+            return FastColor.ARGB32.color(FastColor.ARGB32.alpha(color),
+                    Math.round(FastColor.ARGB32.red(color) * red),
+                    Math.round(FastColor.ARGB32.green(color) * green),
+                    Math.round(FastColor.ARGB32.blue(color) * blue));
+        }
+
+        private int blockLight(int existing, int sky) {
+            return Math.max(existing, LightBrightness.entityLight(strength, sky, skyBrightness, ambientLight));
         }
     }
 }

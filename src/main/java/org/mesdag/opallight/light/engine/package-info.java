@@ -1,6 +1,6 @@
 @ParametersAreNonnullByDefault
 @MethodsReturnNonnullByDefault
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.engine;
 
 import net.minecraft.MethodsReturnNonnullByDefault;
 

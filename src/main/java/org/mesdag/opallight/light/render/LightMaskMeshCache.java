@@ -1,11 +1,10 @@
-package org.mesdag.opallight.light;
+package org.mesdag.opallight.light.render;
 
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import it.unimi.dsi.fastutil.longs.*;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.core.BlockPos;
@@ -16,6 +15,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
+import org.mesdag.opallight.light.engine.LightColorCache;
 
 import java.util.Iterator;
 import java.util.OptionalLong;
@@ -27,13 +27,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongPredicate;
 
-import static org.mesdag.opallight.light.LightMeshLayout.*;
+import static org.mesdag.opallight.light.engine.LightMeshLayout.*;
 
 public final class LightMaskMeshCache {
     private static final Long2ObjectOpenHashMap<VertexBuffer> buffers = new Long2ObjectOpenHashMap<>();
     static final long DYNAMIC_TRANSITION_NANOS = 70_000_000L;
 
-    record Transition(VertexBuffer previous, long startedAt) {
+    record Transition(VertexBuffer previous, long startedAt,
+                      @Nullable LightTransitionColors colors) implements AutoCloseable {
+        @Override
+        public void close() {
+            if (colors != null) colors.close();
+            previous.close();
+        }
     }
 
     private static final Long2ObjectOpenHashMap<Transition> transitions = new Long2ObjectOpenHashMap<>();
@@ -42,7 +48,12 @@ public final class LightMaskMeshCache {
     private static final LongOpenHashSet urgentGroups = new LongOpenHashSet();
     private static final LongOpenHashSet dynamicPriorityGroups = new LongOpenHashSet();
     private static final LongOpenHashSet colorDirtyGroups = new LongOpenHashSet();
+    // 颜色失效但无范围表示全量重算；局部范围保留至网格成功发布。
+    private static final Long2ObjectOpenHashMap<LightUpdateBounds> colorDirtyBounds = new Long2ObjectOpenHashMap<>();
     private static final LongOpenHashSet batchedDirtyGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet batchedDeferredGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet batchedHardGroups = new LongOpenHashSet();
+    private static final LongOpenHashSet deferredColorGroups = new LongOpenHashSet();
     private static boolean batchingDirty;
     private static final Long2ObjectOpenHashMap<AtomicBoolean> inFlight = new Long2ObjectOpenHashMap<>();
     private static final Long2LongOpenHashMap groupVersions = new Long2LongOpenHashMap();
@@ -50,7 +61,8 @@ public final class LightMaskMeshCache {
     private static final LightMaskMeshParts parts = new LightMaskMeshParts();
     private static @Nullable LightMaskReloadTransaction reloadTransaction;
     private static final ConcurrentLinkedQueue<MeshResult> completed = new ConcurrentLinkedQueue<>();
-    private static final ExecutorService meshWorkers = Executors.newFixedThreadPool(2, task -> {
+    private static final int MESH_WORKER_COUNT = Math.max(1, Runtime.getRuntime().availableProcessors() / 4);
+    private static final ExecutorService meshWorkers = Executors.newFixedThreadPool(MESH_WORKER_COUNT, task -> {
         Thread thread = new Thread(task, "OpalLight mesh builder");
         thread.setDaemon(true);
         return thread;
@@ -70,13 +82,30 @@ public final class LightMaskMeshCache {
     }
 
     private static void dirty(long key, boolean geometryOnly) {
-        AtomicBoolean cancellation = inFlight.get(key);
-        if (cancellation != null) cancellation.set(true);
-        if (!geometryOnly) colorDirtyGroups.add(key);
+        dirty(key, geometryOnly, false);
+    }
+
+    private static void dirty(long key, boolean geometryOnly, boolean deferColor) {
+        if (!geometryOnly) {
+            if (!deferColor) colorDirtyBounds.remove(key);
+            colorDirtyGroups.add(key);
+        }
         if (batchingDirty) {
             batchedDirtyGroups.add(key);
+            if (!deferColor) {
+                batchedHardGroups.add(key);
+                batchedDeferredGroups.remove(key);
+            } else if (!batchedHardGroups.contains(key)) batchedDeferredGroups.add(key);
             return;
         }
+        AtomicBoolean cancellation = inFlight.get(key);
+        if (deferColor && cancellation != null && !cancellation.get() && reloadTransaction == null) {
+            // 先发布在途网格再追赶最新颜色，避免持续取消导致饥饿。
+            deferredColorGroups.add(key);
+            return;
+        }
+        deferredColorGroups.remove(key);
+        if (cancellation != null) cancellation.set(true);
         if (reloadTransaction != null) reloadTransaction.invalidate(key);
         failedGroups.remove(key);
         dirtyGroups.add(key);
@@ -89,9 +118,10 @@ public final class LightMaskMeshCache {
 
     public static void endDirtyBatch() {
         batchingDirty = false;
-        /// 入队时已记录颜色失效；提交批次只更新版本，保留纯几何变化的复用资格。
-        for (long key : batchedDirtyGroups) dirty(key, true);
+        for (long key : batchedDirtyGroups) dirty(key, true, batchedDeferredGroups.contains(key));
         batchedDirtyGroups.clear();
+        batchedDeferredGroups.clear();
+        batchedHardGroups.clear();
     }
 
     public static void invalidateChangedGeometry(long packedPos) {
@@ -133,14 +163,16 @@ public final class LightMaskMeshCache {
         markColorChanged(minX, minY, minZ, maxX, maxY, maxZ, false);
     }
 
-    static void markColorChanged(int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
-                                 boolean immediate) {
+    static void markColorChanged(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, boolean immediate) {
+        LightUpdateBounds changed = new LightUpdateBounds(minX, minY, minZ, maxX, maxY, maxZ);
         for (int gx = (minX - 1) >> GROUP_XZ_BLOCK_SHIFT; gx <= (maxX + 1) >> GROUP_XZ_BLOCK_SHIFT; gx++) {
             for (int gy = (minY - 1) >> GROUP_Y_BLOCK_SHIFT; gy <= (maxY + 1) >> GROUP_Y_BLOCK_SHIFT; gy++) {
                 for (int gz = (minZ - 1) >> GROUP_XZ_BLOCK_SHIFT; gz <= (maxZ + 1) >> GROUP_XZ_BLOCK_SHIFT; gz++) {
                     long key = SectionPos.asLong(gx, gy, gz);
-                    dirty(key);
-                    /// 动态颜色优先异步重建，避免在渲染线程同步烘焙整组模型。
+                    LightUpdateBounds previous = colorDirtyBounds.get(key);
+                    if (previous != null) colorDirtyBounds.put(key, previous.union(changed));
+                    else if (!colorDirtyGroups.contains(key)) colorDirtyBounds.put(key, changed);
+                    dirty(key, false, true);
                     if (immediate && reloadTransaction == null) dynamicPriorityGroups.add(key);
                 }
             }
@@ -198,7 +230,7 @@ public final class LightMaskMeshCache {
         }
     }
 
-    public static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, ShaderInstance shader,
+    static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, LightMaskShader shader,
                             boolean reloadInProgress, LongPredicate propagationPending) {
         Minecraft minecraft = Minecraft.getInstance();
         Frustum frustum = minecraft.levelRenderer.getFrustum();
@@ -234,14 +266,14 @@ public final class LightMaskMeshCache {
         while (iterator.hasNext()) {
             var entry = iterator.next();
             if (now - entry.getValue().startedAt() < DYNAMIC_TRANSITION_NANOS && buffers.containsKey(entry.getLongKey())) continue;
-            entry.getValue().previous().close();
+            entry.getValue().close();
             iterator.remove();
         }
     }
 
     private static void closeTransition(long key) {
         Transition transition = transitions.remove(key);
-        if (transition != null) transition.previous().close();
+        if (transition != null) transition.close();
     }
 
     private static boolean hasVisiblePending(@Nullable Frustum frustum) {
@@ -302,9 +334,7 @@ public final class LightMaskMeshCache {
 
     private static void processAsync(ClientLevel level, @Nullable Frustum frustum, boolean schedule,
                                      LongPredicate propagationPending) {
-        /// 同一帧捕获的区域共享原版区块快照，下一帧重新捕获世界状态。
         RenderRegionCache regions = schedule && !dirtyGroups.isEmpty() ? new RenderRegionCache() : null;
-        if (schedule) rebuildUrgent(level, frustum, regions);
         MeshResult result;
         while ((result = completed.poll()) != null) {
             if (result.epoch() != epoch.get()) {
@@ -323,11 +353,21 @@ public final class LightMaskMeshCache {
                 if (result.mesh() != null) result.mesh().close();
                 continue;
             }
+            boolean followup = deferredColorGroups.remove(result.key());
+            boolean dynamicFollowup = dynamicPriorityGroups.contains(result.key());
+            LightUpdateBounds followupBounds = colorDirtyBounds.get(result.key());
             applyMesh(result.key(), result.mesh(), true);
+            if (followup) {
+                dirty(result.key());
+                if (followupBounds != null) colorDirtyBounds.put(result.key(), followupBounds);
+                if (dynamicFollowup) dynamicPriorityGroups.add(result.key());
+            }
         }
 
         if (!schedule) return;
-        for (int available = 2 - inFlight.size(); available > 0; available--) {
+        for (int available = MESH_WORKER_COUNT - inFlight.size(); available > 0; available--) {
+            if (scheduleNext(level, frustum, urgentGroups.iterator(), regions, propagationPending, true))
+                continue;
             if (scheduleNext(level, frustum, dynamicPriorityGroups.iterator(), regions, propagationPending, true))
                 continue;
             if (!scheduleNext(level, frustum, dirtyGroups.iterator(), regions, propagationPending, false)) break;
@@ -350,7 +390,21 @@ public final class LightMaskMeshCache {
             }
             dirtyGroups.remove(key);
             colorDirtyGroups.remove(key);
+            colorDirtyBounds.remove(key);
             dynamicPriorityGroups.remove(key);
+            urgentGroups.remove(key);
+            return;
+        }
+        // 量化后的顶点未变时保留 GPU 缓冲，但仍提交最新几何与失效状态。
+        if (oldBuffer != null && reloadTransaction == null && mesh.unchangedVertices()) {
+            try (mesh) {
+                parts.replace(key, mesh.geometry());
+                dirtyGroups.remove(key);
+                colorDirtyGroups.remove(key);
+                colorDirtyBounds.remove(key);
+                dynamicPriorityGroups.remove(key);
+                urgentGroups.remove(key);
+            }
             return;
         }
         VertexBuffer replacement = new VertexBuffer(VertexBuffer.Usage.STATIC);
@@ -366,43 +420,24 @@ public final class LightMaskMeshCache {
                 closeTransition(key);
                 buffers.put(key, replacement);
                 if (oldBuffer != null) {
-                    if (smooth) transitions.put(key, new Transition(oldBuffer, System.nanoTime()));
+                    if (smooth) {
+                        LightTransitionColors colors = mesh.matchingLayout() ? LightTransitionColors.create(oldBuffer, mesh.mesh().drawState().vertexCount()) : null;
+                        transitions.put(key, new Transition(oldBuffer, System.nanoTime(), colors));
+                    }
                     else oldBuffer.close();
                 }
                 parts.replace(key, mesh.geometry());
             }
             dirtyGroups.remove(key);
             colorDirtyGroups.remove(key);
+            colorDirtyBounds.remove(key);
             dynamicPriorityGroups.remove(key);
+            urgentGroups.remove(key);
         } catch (Throwable error) {
             replacement.close();
             VertexBuffer.unbind();
             org.mesdag.opallight.OpalLight.LOGGER.error("Failed to upload colored light mesh", error);
             failedGroups.add(key);
-        }
-    }
-
-    private static void rebuildUrgent(ClientLevel level, @Nullable Frustum frustum, RenderRegionCache regions) {
-        /// 可见几何变化先构建完整替换网格，再在本帧统一交换缓冲区。
-        LongIterator iterator = urgentGroups.iterator();
-        while (iterator.hasNext()) {
-            long key = iterator.nextLong();
-            if (!dirtyGroups.contains(key) || !buffers.containsKey(key)) {
-                iterator.remove();
-                continue;
-            }
-            AABB box = bounds.computeIfAbsent(key, LightMaskMeshCache::groupBounds);
-            if (frustum != null && !frustum.isVisible(box)) continue;
-            iterator.remove();
-            try {
-                LightMaskMeshBuilder.MeshSnapshot snapshot = LightMaskMeshBuilder.snapshot(level, key, epoch.get(), regions);
-                LightMaskMeshBuilder.BuiltMesh mesh = snapshot == null ? null : LightMaskMeshBuilder.build(snapshot,
-                        parts.previousGeometry(key), parts.changedBlocks(key), () -> false, !colorDirtyGroups.contains(key));
-                applyMesh(key, mesh, false);
-            } catch (Throwable error) {
-                org.mesdag.opallight.OpalLight.LOGGER.error("Failed to build colored light mesh", error);
-                failedGroups.add(key);
-            }
         }
     }
 
@@ -420,7 +455,6 @@ public final class LightMaskMeshCache {
             try {
                 LightMaskMeshBuilder.MeshSnapshot snapshot = LightMaskMeshBuilder.snapshot(level, key, epoch.get(), regions);
                 if (snapshot == null) {
-                    /// 已知没有彩光或模型的组直接提交空结果，不占用工作线程和完成队列。
                     applyMesh(key, null, true);
                     return true;
                 }
@@ -428,12 +462,14 @@ public final class LightMaskMeshCache {
                 Long2ObjectOpenHashMap<LightMaskMeshBuilder.BlockMesh> previousGeometry = parts.previousGeometry(key);
                 LongSet changedBlocks = parts.changedBlocks(key);
                 boolean geometryOnly = !colorDirtyGroups.contains(key);
+                // 重载时旧几何尚未替换，必须全量着色。
+                LightUpdateBounds colorChanges = reloadTransaction == null ? colorDirtyBounds.get(key) : null;
                 AtomicBoolean cancellation = new AtomicBoolean();
                 inFlight.put(key, cancellation);
                 meshWorkers.execute(() -> {
                     try {
                         LightMaskMeshBuilder.BuiltMesh mesh = LightMaskMeshBuilder.build(snapshot, previousGeometry, changedBlocks,
-                                cancellation::get, geometryOnly);
+                            cancellation::get, geometryOnly, colorChanges);
                         if (cancellation.get()) {
                             if (mesh != null) mesh.close();
                             throw new CancellationException();
@@ -477,7 +513,7 @@ public final class LightMaskMeshCache {
         inFlight.clear();
         urgentGroups.clear();
         dynamicPriorityGroups.clear();
-        for (Transition transition : transitions.values()) transition.previous().close();
+        for (Transition transition : transitions.values()) transition.close();
         transitions.clear();
         groupVersions.clear();
         failedGroups.clear();
@@ -487,7 +523,11 @@ public final class LightMaskMeshCache {
         }
         dirtyGroups.clear();
         colorDirtyGroups.clear();
+        colorDirtyBounds.clear();
         batchedDirtyGroups.clear();
+        batchedDeferredGroups.clear();
+        batchedHardGroups.clear();
+        deferredColorGroups.clear();
         batchingDirty = false;
     }
 
