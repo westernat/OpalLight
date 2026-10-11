@@ -80,6 +80,7 @@ public final class LightPropagator {
     }
 
     public static void clearAllSources() {
+        DynamicLights.clear();
         if (activeBatch != null) activeBatch.snapshot().cancel();
         sourcesByChunk.clear();
         cyclingStaticSources.clear();

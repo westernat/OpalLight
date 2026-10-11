@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.mojang.serialization.JsonOps;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.component.DataComponentPredicate;
+import net.minecraft.core.component.DataComponentType;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.TagParser;
@@ -17,6 +18,7 @@ import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
 import org.mesdag.opallight.OpalLight;
 
+import java.util.ArrayList;
 import java.util.function.BiPredicate;
 
 final class LightItemState {
@@ -68,6 +70,45 @@ final class LightItemState {
                     result.error().ifPresent(error -> OpalLight.LOGGER.error("Invalid light item components {}: {}", json, error.message()));
                 }
                 return predicate != null && predicate.test(stack);
+            }
+        };
+    }
+
+    static BiPredicate<ItemStack, Entity> componentFields(JsonElement value) {
+        if (!value.isJsonObject()) throw new IllegalArgumentException("Expected component field map");
+        var matchers = new ArrayList<BiPredicate<ItemStack, Entity>>();
+        for (var entry : value.getAsJsonObject().entrySet()) {
+            var id = LightStatePredicate.id(entry.getKey());
+            if (!BuiltInRegistries.DATA_COMPONENT_TYPE.containsKey(id)) throw new IllegalArgumentException("Unknown data component: " + id);
+            var type = BuiltInRegistries.DATA_COMPONENT_TYPE.get(id);
+            if (type.codec() == null) throw new IllegalArgumentException("Data component has no persistent codec: " + id);
+            matchers.add(componentField(type, entry.getValue().deepCopy()));
+        }
+        return (stack, entity) -> {
+            for (var matcher : matchers) if (!matcher.test(stack, entity)) return false;
+            return true;
+        };
+    }
+
+    private static <T> BiPredicate<ItemStack, Entity> componentField(DataComponentType<T> type, JsonElement expected) {
+        return new BiPredicate<>() {
+            private RegistryAccess access;
+            private T previous;
+            private boolean matched;
+
+            @Override
+            public boolean test(ItemStack stack, Entity entity) {
+                var actual = stack.get(type);
+                if (actual == null || entity == null || entity.level() == null) return false;
+                var current = entity.level().registryAccess();
+                // 组件不可变，替换组件或世界注册表时才重新编码所需组件。
+                if (access != current || !actual.equals(previous)) {
+                    previous = actual;
+                    access = current;
+                    var encoded = type.codecOrThrow().encodeStart(RegistryOps.create(JsonOps.INSTANCE, current), actual);
+                    matched = encoded.result().map(json -> LightDataMatch.matches(expected, json)).orElse(false);
+                }
+                return matched;
             }
         };
     }

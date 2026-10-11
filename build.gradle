@@ -115,6 +115,10 @@ configurations {
 }
 
 repositories {
+    maven {
+        url "https://maven.theillusivec4.top/"
+        content { includeGroup "top.theillusivec4.curios" }
+    }
     mavenLocal()
     exclusiveContent {
         forRepository {
@@ -141,6 +145,7 @@ repositories {
 }
 
 dependencies {
+    compileOnly "top.theillusivec4.curios:curios-neoforge:9.5.1+1.21.1"
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

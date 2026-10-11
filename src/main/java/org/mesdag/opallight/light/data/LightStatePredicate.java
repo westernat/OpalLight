@@ -6,7 +6,12 @@ import com.mojang.serialization.Codec;
 import com.mojang.serialization.DataResult;
 import com.mojang.serialization.Dynamic;
 import com.mojang.serialization.JsonOps;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.TagParser;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -33,7 +38,10 @@ public final class LightStatePredicate {
         this.json = json.deepCopy();
         this.item = item;
         var tests = new ArrayList<BiPredicate<ItemStack, Entity>>();
-        for (var entry : json.entrySet()) tests.add(item ? itemTest(entry.getKey(), entry.getValue()) : entityTest(entry.getKey(), entry.getValue()));
+        for (var entry : json.entrySet()) {
+            tests.add(entry.getKey().equals("conditions") ? customTests(item, entry.getValue())
+                    : item ? itemTest(entry.getKey(), entry.getValue()) : entityTest(entry.getKey(), entry.getValue()));
+        }
         this.tests = List.copyOf(tests);
     }
 
@@ -98,6 +106,7 @@ public final class LightStatePredicate {
             }
             case "nbt" -> LightItemState.nbt(string(value));
             case "components" -> LightItemState.components(value);
+            case "component_fields" -> LightItemState.componentFields(value);
             case "enchantments" -> {
                 if (!value.isJsonObject()) throw new IllegalArgumentException("Expected enchantment ID to level map");
                 var tests = new ArrayList<BiPredicate<ItemStack, Entity>>();
@@ -116,6 +125,24 @@ public final class LightStatePredicate {
     }
 
     private static BiPredicate<ItemStack, Entity> entityTest(String key, JsonElement value) {
+        if (key.equals("effects")) return effects(value);
+        if (key.equals("nbt")) {
+            try {
+                var expected = TagParser.parseTag(string(value));
+                return (stack, entity) -> expected.isEmpty()
+                        || NbtUtils.compareNbt(expected, entity.saveWithoutId(new CompoundTag()), true);
+            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException error) {
+                throw new IllegalArgumentException("Invalid entity NBT: " + error.getMessage());
+            }
+        }
+        if (key.equals("persistent_data")) {
+            try {
+                var expected = TagParser.parseTag(string(value));
+                return (stack, entity) -> NbtUtils.compareNbt(expected, entity.getPersistentData(), true);
+            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException error) {
+                throw new IllegalArgumentException("Invalid entity persistent data: " + error.getMessage());
+            }
+        }
         if (key.equals("health") || key.equals("health_fraction")) {
             var range = range(value, false, 0, key.equals("health_fraction") ? 1 : Float.MAX_VALUE);
             return (stack, entity) -> entity instanceof LivingEntity living && range.test(key.equals("health")
@@ -125,6 +152,7 @@ public final class LightStatePredicate {
         return switch (key) {
             case "burning" -> (stack, entity) -> entity.isOnFire() == expected;
             case "on_ground" -> (stack, entity) -> entity.onGround() == expected;
+            case "eyes_in_water" -> (stack, entity) -> entity.isEyeInFluid(FluidTags.WATER) == expected;
             case "in_water" -> (stack, entity) -> entity.isInWater() == expected;
             case "sprinting" -> (stack, entity) -> entity.isSprinting() == expected;
             case "crouching" -> (stack, entity) -> entity.isCrouching() == expected;
@@ -142,6 +170,37 @@ public final class LightStatePredicate {
                 return entity instanceof Vex vex && vex.isCharging() == expected;
             };
             default -> throw new IllegalArgumentException("Unknown entity state: " + key);
+        };
+    }
+
+    private static BiPredicate<ItemStack, Entity> customTests(boolean item, JsonElement value) {
+        if (!value.isJsonObject()) throw new IllegalArgumentException("Expected custom condition map");
+        var conditions = new ArrayList<BiPredicate<ItemStack, Entity>>();
+        for (var entry : value.getAsJsonObject().entrySet()) {
+            if (!entry.getKey().contains(":")) throw new IllegalArgumentException("Light conditions need a namespace: " + entry.getKey());
+            conditions.add(LightConditions.compile(item, id(entry.getKey()), entry.getValue().deepCopy()));
+        }
+        return (stack, entity) -> {
+            for (var condition : conditions) if (!condition.test(stack, entity)) return false;
+            return true;
+        };
+    }
+
+    private static BiPredicate<ItemStack, Entity> effects(JsonElement value) {
+        if (!value.isJsonObject()) throw new IllegalArgumentException("Expected effect ID to presence map");
+        var conditions = new ArrayList<BiPredicate<ItemStack, Entity>>();
+        for (var entry : value.getAsJsonObject().entrySet()) {
+            var id = id(entry.getKey());
+            boolean expected = flag(entry.getValue());
+            conditions.add((stack, entity) -> {
+                if (!(entity instanceof LivingEntity living)) return false;
+                var effect = BuiltInRegistries.MOB_EFFECT.getHolder(id);
+                return effect.isPresent() && living.hasEffect(effect.get()) == expected;
+            });
+        }
+        return (stack, entity) -> {
+            for (var condition : conditions) if (!condition.test(stack, entity)) return false;
+            return true;
         };
     }
 
