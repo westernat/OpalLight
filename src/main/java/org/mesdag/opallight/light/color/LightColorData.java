@@ -5,7 +5,6 @@ public final class LightColorData {
     }
 
     public static long pack(double red, double green, double blue) {
-        // 沿用原始传播规则：各通道累加后限制为 1，再参与空间插值。
         return Math.round(Math.min(1.0, red) * 65535) << 32
             | Math.round(Math.min(1.0, green) * 65535) << 16
             | Math.round(Math.min(1.0, blue) * 65535);

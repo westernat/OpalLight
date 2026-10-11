@@ -29,10 +29,10 @@ final class LightPropagationSolver {
     private record SourceKey(long pos, int emission) {
     }
 
-    // 同位置、同范围的光共享遮挡路径，合并遍历仍保留总光强。
+    // 同位置、同范围的光共享遮挡路径，合并颜色贡献并保留最强单灯亮度。
     static final class CombinedSource {
         final LightSource original;
-        double red, green, blue;
+        double red, green, blue, brightness;
 
         CombinedSource(LightSource original) {
             this.original = original;
@@ -59,6 +59,7 @@ final class LightPropagationSolver {
             entry.red += color.r();
             entry.green += color.g();
             entry.blue += color.b();
+            entry.brightness = Math.max(entry.brightness, peak);
         }
         return new ArrayList<>(combined.values());
     }
@@ -116,6 +117,7 @@ final class LightPropagationSolver {
                 double solidRed = source.red * factor;
                 double solidGreen = source.green * factor;
                 double solidBlue = source.blue * factor;
+                double brightness = source.brightness * factor;
                 int visited = 0;
                 while (!queue.isEmpty()) {
                     if ((visited++ & 1023) == 0) input.checkCancelled();
@@ -138,10 +140,11 @@ final class LightPropagationSolver {
                     }
                     int index = (x & 15) | (z & 15) << 4 | (y & 15) << 8;
                     if (section.colors != null) {
-                        int offset = index * 3;
+                        int offset = index * 4;
                         section.colors[offset] += solidRed;
                         section.colors[offset + 1] += solidGreen;
                         section.colors[offset + 2] += solidBlue;
+                        section.colors[offset + 3] = Math.max(section.colors[offset + 3], brightness);
                         section.occupied.set(index);
                     }
                     if (lightLevel <= 1) continue;
@@ -200,10 +203,13 @@ final class LightPropagationSolver {
             Long2LongOpenHashMap values = new Long2LongOpenHashMap(section.occupied.cardinality());
             int sx = SectionPos.x(key) << 4, sy = SectionPos.y(key) << 4, sz = SectionPos.z(key) << 4;
             for (int i = section.occupied.nextSetBit(0); i >= 0; i = section.occupied.nextSetBit(i + 1)) {
-                int offset = i * 3;
+                int offset = i * 4;
+                // RGB 累积决定混合色相，统一缩放使最终亮度等于最强光源贡献。
+                double peak = Math.max(section.colors[offset], Math.max(section.colors[offset + 1], section.colors[offset + 2]));
+                double scale = section.colors[offset + 3] / peak;
                 values.put(BlockPos.asLong(sx + (i & 15), sy + (i >> 8), sz + (i >> 4 & 15)),
-                    LightColorData.pack(section.colors[offset], section.colors[offset + 1],
-                        section.colors[offset + 2]));
+                    LightColorData.pack(section.colors[offset] * scale, section.colors[offset + 1] * scale,
+                        section.colors[offset + 2] * scale));
             }
             output.put(key, values);
         }
@@ -219,7 +225,7 @@ final class LightPropagationSolver {
         final BitSet occupied = new BitSet(4096);
 
         AccumulatedSection(boolean target) {
-            colors = target ? new double[4096 * 3] : null;
+            colors = target ? new double[4096 * 4] : null;
         }
     }
 
