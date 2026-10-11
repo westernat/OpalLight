@@ -31,6 +31,22 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
         return new ColoredVertexConsumer(delegate.getBuffer(renderType), cameraPos, fixedColor);
     }
 
+    public static VertexConsumer unwrap(VertexConsumer consumer) {
+        return consumer instanceof ColoredVertexConsumer colored ? unwrap(colored.output) : consumer;
+    }
+
+    public static MultiBufferSource unwrap(MultiBufferSource source) {
+        return source instanceof ColoredLightBufferSource colored ? unwrap(colored.delegate) : source;
+    }
+
+    public static VertexConsumer rewrap(VertexConsumer original, VertexConsumer refreshed) {
+        if (original instanceof ColoredVertexConsumer colored) {
+            colored.output = rewrap(colored.output, refreshed);
+            return colored;
+        }
+        return refreshed;
+    }
+
     public static VertexConsumer wrapFixed(VertexConsumer output, long color) {
         return color != 0 ? new ColoredVertexConsumer(output, null, color) : output;
     }
@@ -40,7 +56,7 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
     }
 
     private static final class ColoredVertexConsumer implements VertexConsumer {
-        private final VertexConsumer output;
+        private VertexConsumer output;
         private final @Nullable Vec3 cameraPos;
         private float red = 1.0F, green = 1.0F, blue = 1.0F;
         private float strength;
