@@ -34,6 +34,7 @@ final class DynamicLightSources {
         for (Entity entity : level.entitiesForRendering()) {
             if (entity != localPlayer) collect(level, entity, current);
         }
+        DynamicLights.collect(level, current);
         return LightPropagator.replaceDynamicSources(current);
     }
 

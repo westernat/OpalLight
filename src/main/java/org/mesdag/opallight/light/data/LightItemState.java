@@ -49,6 +49,10 @@ final class LightItemState {
         throw new IllegalArgumentException("Data components require Minecraft 1.21.1; use nbt on 1.20.1");
     }
 
+    static BiPredicate<ItemStack, Entity> componentFields(JsonElement value) {
+        throw new IllegalArgumentException("Component field matching requires Minecraft 1.21.1; use nbt on 1.20.1");
+    }
+
     private static ListTag enchantments(ItemStack stack) {
         return stack.is(Items.ENCHANTED_BOOK) ? EnchantedBookItem.getEnchantments(stack) : stack.getEnchantmentTags();
     }

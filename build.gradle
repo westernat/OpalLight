@@ -128,6 +128,10 @@ obfuscation {
 }
 
 repositories {
+    maven {
+        url "https://maven.theillusivec4.top/"
+        content { includeGroup "top.theillusivec4.curios" }
+    }
     mavenLocal()
     exclusiveContent {
         forRepository {
@@ -161,6 +165,7 @@ mixin {
 boolean slim = true
 
 dependencies {
+    compileOnly "top.theillusivec4.curios:curios-forge:5.14.1+1.20.1:api"
     compileOnly(annotationProcessor("io.github.llamalad7:mixinextras-common:${mixin_extras_version}"))
     implementation("io.github.llamalad7:mixinextras-forge:${mixin_extras_version}")
     if (!slim) {
