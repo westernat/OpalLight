@@ -146,12 +146,15 @@ public final class LightManager {
     }
 
     private static void updateLighting(ClientLevel level) {
+        if (LightPropagator.consumeDynamicInvalidation()) LightMaskMeshCache.invalidateDynamicBatch();
+        // 当前动态批次完成前固定颜色快照，持续移动只排入下一次传播。
+        if (LightMaskMeshCache.hasPendingDynamicBatch()) return;
         boolean firstMeshPending = !LightMaskMeshCache.hasMeshes();
         Supplier<OptionalLong> preferred = () ->
                 LightMaskMeshCache.firstVisiblePropagationGroup(level, LightPropagator::isGroupPropagationPending);
         var commit = LightPropagator.flushPending(level, firstMeshPending, preferred);
         if (commit != null) {
-            LightMaskMeshCache.beginDirtyBatch();
+            LightMaskMeshCache.beginDirtyBatch(commit.dynamic());
             try {
                 for (var update : commit.updates()) {
                     LightColorCache.INSTANCE.apply(update);
@@ -162,8 +165,9 @@ public final class LightManager {
                 LightMaskMeshCache.endDirtyBatch();
             }
             // 发布完成后才允许捕获下一份传播快照。
-            LightPropagator.flushPending(level, firstMeshPending, preferred);
+            if (!LightMaskMeshCache.hasPendingDynamicBatch()) LightPropagator.flushPending(level, firstMeshPending, preferred);
         }
+        if (!LightPropagator.hasPendingUpdates()) LightMaskMeshCache.resumeDynamicBatch();
         if (reloadInProgress) reloadInProgress = LightPropagator.hasPendingUpdates();
     }
 }

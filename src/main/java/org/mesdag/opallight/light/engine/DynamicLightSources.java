@@ -70,17 +70,17 @@ final class DynamicLightSources {
 
     private static void addItem(Level level, Entity entity, int slot, BlockPos pos, ItemStack stack, Long2ObjectOpenHashMap<LightSource> sources) {
         var light = LightSourceDefinitions.itemWithEmissive(level, pos, stack, entity, entity.isOnFire());
-        if (light != null) sources.put(sourceKey(entity.getId(), slot), new LightSource(pos.asLong(), light.left(), light.rightInt()));
+        if (light != null) sources.put(sourceKey(entity.getId(), slot), LightPropagator.reuseDynamicSource(sourceKey(entity.getId(), slot), pos.asLong(), light.left(), light.rightInt()));
     }
 
     private static void addBlock(Level level, Entity entity, BlockPos pos, BlockState state, Long2ObjectOpenHashMap<LightSource> sources) {
         var light = LightSourceDefinitions.colorWithEmissive(level, pos, state);
-        if (light != null) sources.put(sourceKey(entity.getId(), 2), new LightSource(pos.asLong(), light.left(), light.rightInt()));
+        if (light != null) sources.put(sourceKey(entity.getId(), 2), LightPropagator.reuseDynamicSource(sourceKey(entity.getId(), 2), pos.asLong(), light.left(), light.rightInt()));
     }
 
     private static void addDefinition(Entity entity, int slot, BlockPos pos, DynamicLightDefinition definition, Long2ObjectOpenHashMap<LightSource> sources) {
         if (definition == null || definition.lightLevel() == 0) return;
-        sources.put(sourceKey(entity.getId(), slot), new LightSource(pos.asLong(),
+        sources.put(sourceKey(entity.getId(), slot), LightPropagator.reuseDynamicSource(sourceKey(entity.getId(), slot), pos.asLong(),
                 LightSourceDefinitions.profile(definition), definition.lightLevel()));
     }
 }

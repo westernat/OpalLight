@@ -1,5 +1,6 @@
 package org.mesdag.opallight.light.engine;
 
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -107,6 +108,7 @@ final class LightPropagationSnapshot implements BlockGetter {
             }
         }
         List<LightSource> sources = new ArrayList<>();
+        Long2IntOpenHashMap sourceRanges = new Long2IntOpenHashMap();
         Long2ObjectOpenHashMap<BitSet> neededSections = new Long2ObjectOpenHashMap<>();
         for (long chunkKey : scanned) {
             var indexed = indexedSources.get(chunkKey);
@@ -116,7 +118,7 @@ final class LightPropagationSnapshot implements BlockGetter {
                     int emission = entry.getValue().rightInt();
                     if (!canReachTarget(pos, emission, targets, restrictedSections)) continue;
                     sources.add(new LightSource(pos, entry.getValue().left(), emission));
-                    includeSourceSections(pos, emission, level.getMinBuildHeight(), level.getMaxBuildHeight(), neededSections);
+                    if (emission > sourceRanges.get(pos)) sourceRanges.put(pos, emission);
                 }
             }
             var moving = dynamicSources.get(chunkKey);
@@ -124,9 +126,12 @@ final class LightPropagationSnapshot implements BlockGetter {
                 for (LightSource source : moving) {
                     if (!canReachTarget(source.pos(), source.emission(), targets, restrictedSections)) continue;
                     sources.add(source);
-                    includeSourceSections(source.pos(), source.emission(), level.getMinBuildHeight(), level.getMaxBuildHeight(), neededSections);
+                    if (source.emission() > sourceRanges.get(source.pos())) sourceRanges.put(source.pos(), source.emission());
                 }
             }
+        }
+        for (var range : sourceRanges.long2IntEntrySet()) {
+            includeSourceSections(range.getLongKey(), range.getIntValue(), level.getMinBuildHeight(), level.getMaxBuildHeight(), neededSections);
         }
         Long2ObjectOpenHashMap<ChunkSections> chunks = new Long2ObjectOpenHashMap<>();
         boolean unsupported = false;

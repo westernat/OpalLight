@@ -15,6 +15,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
+import org.mesdag.opallight.OpalLight;
 import org.mesdag.opallight.light.engine.LightColorCache;
 
 import java.util.Iterator;
@@ -55,6 +56,9 @@ public final class LightMaskMeshCache {
     private static final LongOpenHashSet batchedHardGroups = new LongOpenHashSet();
     private static final LongOpenHashSet deferredColorGroups = new LongOpenHashSet();
     private static boolean batchingDirty;
+    private static boolean batchingDynamic;
+    private static @Nullable LightMeshBatch<LightMaskMeshBuilder.BuiltMesh> dynamicBatch;
+    private static final LongOpenHashSet suspendedDynamicGroups = new LongOpenHashSet();
     private static final Long2ObjectOpenHashMap<AtomicBoolean> inFlight = new Long2ObjectOpenHashMap<>();
     private static final Long2LongOpenHashMap groupVersions = new Long2LongOpenHashMap();
     private static final LongOpenHashSet failedGroups = new LongOpenHashSet();
@@ -99,12 +103,14 @@ public final class LightMaskMeshCache {
             return;
         }
         AtomicBoolean cancellation = inFlight.get(key);
-        if (deferColor && cancellation != null && !cancellation.get() && reloadTransaction == null) {
+        if (deferColor && cancellation != null && !cancellation.get() && reloadTransaction == null
+                && !batchingDynamic && (dynamicBatch == null || !dynamicBatch.contains(key))) {
             // 先发布在途网格再追赶最新颜色，避免持续取消导致饥饿。
             deferredColorGroups.add(key);
             return;
         }
         deferredColorGroups.remove(key);
+        if (dynamicBatch != null) dynamicBatch.invalidate(key);
         if (cancellation != null) cancellation.set(true);
         if (reloadTransaction != null) reloadTransaction.invalidate(key);
         failedGroups.remove(key);
@@ -112,16 +118,48 @@ public final class LightMaskMeshCache {
         groupVersions.addTo(key, 1);
     }
 
-    public static void beginDirtyBatch() {
+    public static void beginDirtyBatch(boolean dynamic) {
         batchingDirty = true;
+        batchingDynamic = dynamic && reloadTransaction == null;
     }
 
     public static void endDirtyBatch() {
         batchingDirty = false;
         for (long key : batchedDirtyGroups) dirty(key, true, batchedDeferredGroups.contains(key));
+        if (batchingDynamic) {
+            LongOpenHashSet members = new LongOpenHashSet(batchedDirtyGroups);
+            members.addAll(suspendedDynamicGroups);
+            suspendedDynamicGroups.clear();
+            if (!members.isEmpty()) {
+                dynamicBatch = new LightMeshBatch<>(members);
+                dynamicPriorityGroups.addAll(members);
+            }
+        }
+        batchingDynamic = false;
         batchedDirtyGroups.clear();
         batchedDeferredGroups.clear();
         batchedHardGroups.clear();
+    }
+
+    static boolean hasPendingDynamicBatch() {
+        return dynamicBatch != null;
+    }
+
+    static void invalidateDynamicBatch() {
+        suspendedDynamicGroups.addAll(dynamicPriorityGroups);
+        if (dynamicBatch != null) {
+            suspendedDynamicGroups.addAll(dynamicBatch.keys());
+            dynamicBatch.close();
+            dynamicBatch = null;
+        }
+        for (long key : suspendedDynamicGroups) dirty(key);
+    }
+
+    static void resumeDynamicBatch() {
+        if (suspendedDynamicGroups.isEmpty()) return;
+        dynamicBatch = new LightMeshBatch<>(suspendedDynamicGroups);
+        dynamicPriorityGroups.addAll(suspendedDynamicGroups);
+        suspendedDynamicGroups.clear();
     }
 
     public static void invalidateChangedGeometry(long packedPos) {
@@ -203,6 +241,12 @@ public final class LightMaskMeshCache {
             if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
                     && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) dirty(key);
         }
+        if (dynamicBatch != null) {
+            for (long key : dynamicBatch.keys()) {
+                if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
+                        && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) dirty(key);
+            }
+        }
         if (reloadTransaction != null) reloadTransaction.discardChunk(minGX, maxGX, minGZ, maxGZ);
     }
 
@@ -221,6 +265,12 @@ public final class LightMaskMeshCache {
         for (long key : inFlight.keySet()) {
             if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
                     && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) dirty(key);
+        }
+        if (dynamicBatch != null) {
+            for (long key : dynamicBatch.keys()) {
+                if (SectionPos.x(key) >= minGX && SectionPos.x(key) <= maxGX
+                        && SectionPos.z(key) >= minGZ && SectionPos.z(key) <= maxGZ) dirty(key);
+            }
         }
         if (reloadTransaction != null) {
             for (long key : reloadTransaction.keys()) {
@@ -348,9 +398,14 @@ public final class LightMaskMeshCache {
             }
             if (result.error() instanceof CancellationException) continue;
             if (result.error() != null) {
-                org.mesdag.opallight.OpalLight.LOGGER.error("Failed to build colored light mesh", result.error());
+                OpalLight.LOGGER.error("Failed to build colored light mesh", result.error());
+                failDynamicBatch(result.key());
                 failedGroups.add(result.key());
                 if (result.mesh() != null) result.mesh().close();
+                continue;
+            }
+            if (dynamicBatch != null && dynamicBatch.contains(result.key())) {
+                dynamicBatch.stage(result.key(), result.mesh());
                 continue;
             }
             boolean followup = deferredColorGroups.remove(result.key());
@@ -364,6 +419,9 @@ public final class LightMaskMeshCache {
             }
         }
 
+        if (dynamicBatch != null && dynamicBatch.isReady()) {
+            commitDynamicBatch();
+        }
         if (!schedule) return;
         for (int available = MESH_WORKER_COUNT - inFlight.size(); available > 0; available--) {
             if (scheduleNext(level, frustum, urgentGroups.iterator(), regions, propagationPending, true))
@@ -374,7 +432,62 @@ public final class LightMaskMeshCache {
         }
     }
 
+    private record PreparedMesh(VertexBuffer buffer, @Nullable LightTransitionColors colors) implements AutoCloseable {
+        @Override
+        public void close() {
+            if (colors != null) colors.close();
+            buffer.close();
+        }
+    }
+
+    private static void commitDynamicBatch() {
+        var ready = dynamicBatch;
+        if (ready == null) return;
+        Long2ObjectOpenHashMap<LightMaskMeshBuilder.BuiltMesh> meshes = new Long2ObjectOpenHashMap<>();
+        Long2ObjectOpenHashMap<PreparedMesh> prepared = new Long2ObjectOpenHashMap<>();
+        boolean smooth = true;
+        for (long key : ready.keys()) {
+            var mesh = ready.take(key);
+            meshes.put(key, mesh);
+            if (mesh == null || !buffers.containsKey(key) || parts.hasChangedBlocks(key)) smooth = false;
+        }
+        try {
+            for (long key : ready.keys()) {
+                var mesh = meshes.get(key);
+                VertexBuffer old = buffers.get(key);
+                if (mesh == null || old != null && mesh.unchangedVertices()) continue;
+                VertexBuffer buffer = new VertexBuffer(VertexBuffer.Usage.STATIC);
+                prepared.put(key, new PreparedMesh(buffer, null));
+                buffer.bind();
+                buffer.upload(mesh.mesh());
+                VertexBuffer.unbind();
+                if (smooth && mesh.matchingLayout()) {
+                    var colors = LightTransitionColors.create(old, mesh.mesh().drawState().vertexCount());
+                    prepared.put(key, new PreparedMesh(buffer, colors));
+                }
+            }
+        } catch (Throwable error) {
+            VertexBuffer.unbind();
+            for (PreparedMesh mesh : prepared.values()) mesh.close();
+            for (var mesh : meshes.values()) if (mesh != null) mesh.close();
+            failedGroups.addAll(ready.keys());
+            ready.close();
+            dynamicBatch = null;
+            OpalLight.LOGGER.error("Failed to prepare colored light batch", error);
+            return;
+        }
+        // 全部上传成功后才替换可见缓冲区，同批过渡从同一时刻开始。
+        dynamicBatch = null;
+        long startedAt = System.nanoTime();
+        for (long key : ready.keys()) applyMesh(key, meshes.get(key), smooth, startedAt, prepared.get(key));
+        ready.close();
+    }
+
     private static void applyMesh(long key, @Nullable LightMaskMeshBuilder.BuiltMesh mesh, boolean stageReload) {
+        applyMesh(key, mesh, stageReload, System.nanoTime(), null);
+    }
+
+    private static void applyMesh(long key, @Nullable LightMaskMeshBuilder.BuiltMesh mesh, boolean stageReload, long startedAt, @Nullable PreparedMesh prepared) {
         VertexBuffer oldBuffer = buffers.get(key);
         if (mesh == null) {
             closeTransition(key);
@@ -398,6 +511,7 @@ public final class LightMaskMeshCache {
         // 量化后的顶点未变时保留 GPU 缓冲，但仍提交最新几何与失效状态。
         if (oldBuffer != null && reloadTransaction == null && mesh.unchangedVertices()) {
             try (mesh) {
+                closeTransition(key);
                 parts.replace(key, mesh.geometry());
                 dirtyGroups.remove(key);
                 colorDirtyGroups.remove(key);
@@ -407,11 +521,13 @@ public final class LightMaskMeshCache {
             }
             return;
         }
-        VertexBuffer replacement = new VertexBuffer(VertexBuffer.Usage.STATIC);
+        VertexBuffer replacement = prepared == null ? new VertexBuffer(VertexBuffer.Usage.STATIC) : prepared.buffer();
         try (mesh) {
-            replacement.bind();
-            replacement.upload(mesh.mesh());
-            VertexBuffer.unbind();
+            if (prepared == null) {
+                replacement.bind();
+                replacement.upload(mesh.mesh());
+                VertexBuffer.unbind();
+            }
             if (stageReload && reloadTransaction != null) {
                 reloadTransaction.stage(key, replacement, mesh.geometry());
             } else {
@@ -421,8 +537,9 @@ public final class LightMaskMeshCache {
                 buffers.put(key, replacement);
                 if (oldBuffer != null) {
                     if (smooth) {
-                        LightTransitionColors colors = mesh.matchingLayout() ? LightTransitionColors.create(oldBuffer, mesh.mesh().drawState().vertexCount()) : null;
-                        transitions.put(key, new Transition(oldBuffer, System.nanoTime(), colors));
+                        LightTransitionColors colors = prepared != null ? prepared.colors()
+                                : mesh.matchingLayout() ? LightTransitionColors.create(oldBuffer, mesh.mesh().drawState().vertexCount()) : null;
+                        transitions.put(key, new Transition(oldBuffer, startedAt, colors));
                     }
                     else oldBuffer.close();
                 }
@@ -436,7 +553,7 @@ public final class LightMaskMeshCache {
         } catch (Throwable error) {
             replacement.close();
             VertexBuffer.unbind();
-            org.mesdag.opallight.OpalLight.LOGGER.error("Failed to upload colored light mesh", error);
+            OpalLight.LOGGER.error("Failed to upload colored light mesh", error);
             failedGroups.add(key);
         }
     }
@@ -447,15 +564,18 @@ public final class LightMaskMeshCache {
         while (iterator.hasNext()) {
             long key = iterator.nextLong();
             if (!dirtyGroups.contains(key)) continue;
+            if (suspendedDynamicGroups.contains(key)) continue;
+            if (dynamicBatch != null && dynamicBatch.hasResult(key)) continue;
             if (inFlight.containsKey(key)) continue;
             if (failedGroups.contains(key)) continue;
             if (!dynamicPriority && propagationPending.test(key)) continue;
             AABB box = bounds.computeIfAbsent(key, LightMaskMeshCache::groupBounds);
-            if (frustum != null && !frustum.isVisible(box)) continue;
+            if ((dynamicBatch == null || !dynamicBatch.contains(key)) && frustum != null && !frustum.isVisible(box)) continue;
             try {
                 LightMaskMeshBuilder.MeshSnapshot snapshot = LightMaskMeshBuilder.snapshot(level, key, epoch.get(), regions);
                 if (snapshot == null) {
-                    applyMesh(key, null, true);
+                    if (dynamicBatch != null && dynamicBatch.contains(key)) dynamicBatch.stage(key, null);
+                    else applyMesh(key, null, true);
                     return true;
                 }
                 long version = groupVersions.get(key);
@@ -485,7 +605,8 @@ public final class LightMaskMeshCache {
                     }
                 });
             } catch (Throwable error) {
-                org.mesdag.opallight.OpalLight.LOGGER.error("Failed to snapshot colored light mesh", error);
+                OpalLight.LOGGER.error("Failed to snapshot colored light mesh", error);
+                failDynamicBatch(key);
                 failedGroups.add(key);
                 return false;
             }
@@ -507,7 +628,23 @@ public final class LightMaskMeshCache {
         colorDirtyGroups.addAll(carryDirty);
     }
 
+    private static void failDynamicBatch(long key) {
+        if (dynamicBatch == null || !dynamicBatch.contains(key)) return;
+        failedGroups.addAll(dynamicBatch.keys());
+        for (long member : dynamicBatch.keys()) {
+            AtomicBoolean cancellation = inFlight.get(member);
+            if (cancellation != null) cancellation.set(true);
+            groupVersions.addTo(member, 1);
+        }
+        dynamicBatch.close();
+        dynamicBatch = null;
+    }
+
     private static void clearJobs() {
+        if (dynamicBatch != null) dynamicBatch.close();
+        dynamicBatch = null;
+        suspendedDynamicGroups.clear();
+        batchingDynamic = false;
         epoch.incrementAndGet();
         for (AtomicBoolean cancellation : inFlight.values()) cancellation.set(true);
         inFlight.clear();
