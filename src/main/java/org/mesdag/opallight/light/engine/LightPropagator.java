@@ -26,6 +26,7 @@ public final class LightPropagator {
     private static final Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> cyclingStaticSources = new Long2ObjectOpenHashMap<>();
     private static final Long2ObjectOpenHashMap<LongOpenHashSet> emittersByChunk = new Long2ObjectOpenHashMap<>();
     private static final Long2ObjectOpenHashMap<LightSource> dynamicSources = new Long2ObjectOpenHashMap<>();
+    private static final Long2IntOpenHashMap changedDynamicRanges = new Long2IntOpenHashMap();
     private static final Long2ObjectOpenHashMap<List<LightSource>> dynamicByChunk = new Long2ObjectOpenHashMap<>();
     private static final LongOpenHashSet pendingChunks = new LongOpenHashSet();
     private static final LongOpenHashSet dynamicPendingChunks = new LongOpenHashSet();
@@ -44,6 +45,7 @@ public final class LightPropagator {
     });
     private static final int ASYNC_BATCH_CHUNKS = 64;
     private static ActiveBatch activeBatch;
+    private static boolean dynamicInvalidation;
     private static long lastCycleTick = Long.MIN_VALUE;
 
     public static int updateDynamicSources(ClientLevel level) {
@@ -77,11 +79,13 @@ public final class LightPropagator {
 
     public static void clearAllSources() {
         DynamicLights.clear();
+        dynamicInvalidation = false;
         if (activeBatch != null) activeBatch.snapshot().cancel();
         sourcesByChunk.clear();
         cyclingStaticSources.clear();
         emittersByChunk.clear();
         dynamicSources.clear();
+        changedDynamicRanges.clear();
         dynamicByChunk.clear();
         pendingChunks.clear();
         dynamicPendingChunks.clear();
@@ -234,10 +238,21 @@ public final class LightPropagator {
     // 动态光源按实体和光源槽跟踪；一次替换同时标记旧位置和新位置，避免移动残影。
     static int replaceDynamicSources(Long2ObjectMap<LightSource> current) {
         int changed = 0;
+        Long2IntOpenHashMap changedRanges = changedDynamicRanges;
+        changedRanges.clear();
+        for (var entry : dynamicSources.long2ObjectEntrySet()) {
+            LightSource next = current.get(entry.getLongKey());
+            LightSource old = entry.getValue();
+            if (next == null || next.emission() != old.emission() || !next.profile().equals(old.profile())) {
+                dynamicInvalidation = true;
+                break;
+            }
+        }
         for (var entry : dynamicSources.long2ObjectEntrySet()) {
             LightSource next = current.get(entry.getLongKey());
             if (entry.getValue().equals(next)) continue;
-            scheduleAround(BlockPos.of(entry.getValue().pos()), entry.getValue().emission(), true);
+            LightSource source = entry.getValue();
+            if (source.emission() > changedRanges.get(source.pos())) changedRanges.put(source.pos(), source.emission());
             changed++;
         }
         for (var entry : current.long2ObjectEntrySet()) {
@@ -245,11 +260,14 @@ public final class LightPropagator {
             if (entry.getValue().equals(old)) continue;
             // 同位置同半径的颜色变化已在旧源范围入队，不再重复合并九个区块。
             if (old == null || old.pos() != entry.getValue().pos() || old.emission() != entry.getValue().emission()) {
-                scheduleAround(BlockPos.of(entry.getValue().pos()), entry.getValue().emission(), true);
+                LightSource source = entry.getValue();
+                if (source.emission() > changedRanges.get(source.pos()))
+                    changedRanges.put(source.pos(), source.emission());
             }
             if (old == null) changed++;
         }
         if (changed == 0) return 0;
+        scheduleDynamicRanges(changedRanges);
         dynamicSources.clear();
         dynamicSources.putAll(current);
         dynamicByChunk.clear();
@@ -259,6 +277,47 @@ public final class LightPropagator {
         }
         prioritizeDynamicPropagation();
         return changed;
+    }
+
+    static LightSource reuseDynamicSource(long key, long pos, LightProfile profile, int emission) {
+        LightSource previous = dynamicSources.get(key);
+        return previous != null && previous.pos() == pos && previous.emission() == emission && previous.profile().equals(profile)
+            ? previous : new LightSource(pos, profile, emission);
+    }
+
+    // 一次采集中的旧、新范围先合并，再逐区块入队。
+    private static void scheduleDynamicRanges(Long2IntOpenHashMap ranges) {
+        Long2ObjectOpenHashMap<LongOpenHashSet> affected = new Long2ObjectOpenHashMap<>();
+        for (var entry : ranges.long2IntEntrySet()) {
+            long pos = entry.getLongKey();
+            int x = BlockPos.getX(pos), y = BlockPos.getY(pos), z = BlockPos.getZ(pos);
+            int cx = x >> 4, cz = z >> 4;
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    int minX = (cx + dx) << 4, minZ = (cz + dz) << 4;
+                    int distanceX = Math.max(0, Math.max(minX - x, x - minX - 15));
+                    int distanceZ = Math.max(0, Math.max(minZ - z, z - minZ - 15));
+                    int vertical = entry.getIntValue() - 1 - distanceX - distanceZ;
+                    if (vertical < 0) continue;
+                    long chunkKey = ChunkPos.asLong(cx + dx, cz + dz);
+                    LongOpenHashSet sections = affected.computeIfAbsent(chunkKey, unused -> new LongOpenHashSet());
+                    for (int sy = (y - vertical) >> 4; sy <= (y + vertical) >> 4; sy++) {
+                        sections.add(SectionPos.asLong(cx + dx, sy, cz + dz));
+                    }
+                }
+            }
+        }
+        for (var entry : affected.long2ObjectEntrySet()) {
+            long key = entry.getLongKey();
+            scheduleChunk(ChunkPos.getX(key), ChunkPos.getZ(key), entry.getValue(), true);
+            dynamicPendingChunks.add(key);
+        }
+    }
+
+    public static boolean consumeDynamicInvalidation() {
+        boolean invalidated = dynamicInvalidation;
+        dynamicInvalidation = false;
+        return invalidated;
     }
 
     public static boolean isGroupPropagationPending(long groupKey) {
@@ -303,6 +362,7 @@ public final class LightPropagator {
         } catch (RuntimeException error) {
             org.mesdag.opallight.OpalLight.LOGGER.error("Failed to snapshot colored light propagation", error);
             pendingChunks.addAll(requested);
+            if (dynamicBatch) dynamicPendingChunks.addAll(requested);
             pendingSections.putAll(sections);
             return commit;
         }
@@ -312,8 +372,7 @@ public final class LightPropagator {
             return commit;
         }
         activeBatch = new ActiveBatch(level, versions, snapshot,
-            CompletableFuture.supplyAsync(snapshot::compute,
-                dynamicBatch ? dynamicWorker : propagationWorker), dynamicBatch);
+            CompletableFuture.supplyAsync(snapshot::compute, dynamicBatch ? dynamicWorker : propagationWorker), dynamicBatch);
         return commit;
     }
 
@@ -325,9 +384,16 @@ public final class LightPropagator {
 
     private static void prioritizeDynamicPropagation() {
         ActiveBatch previous = activeBatch;
-        if (previous == null || previous.dynamic() || previous.future().isDone()) return;
-        // 原批次未完成时保留全部目标和高度范围，再让动态光先计算。
+        if (previous == null || !dynamicInvalidation && (previous.dynamic() || previous.future().isDone())) return;
+        requeueActiveBatch();
+    }
+
+    private static void requeueActiveBatch() {
+        ActiveBatch previous = activeBatch;
+        if (previous == null) return;
+        // 失效时整批重新入队，避免只发布同一次变化的一部分区域。
         previous.snapshot().cancel();
+        if (previous.dynamic()) dynamicPendingChunks.addAll(previous.versions().keySet());
         for (long key : previous.versions().keySet()) {
             LongOpenHashSet oldSections = previous.snapshot().targetSections(key);
             if (pendingChunks.add(key)) {
@@ -375,7 +441,7 @@ public final class LightPropagator {
         boolean added = pendingChunks.add(key);
         boolean activeTarget = activeBatch != null && activeBatch.versions().containsKey(key);
         // 移动只合并下一批更新；当前动态快照及已完成的静态快照允许先发布一次。
-        boolean deferred = dynamic && activeTarget && (activeBatch.dynamic() || activeBatch.future().isDone());
+        boolean deferred = dynamic && !dynamicInvalidation && activeTarget && (activeBatch.dynamic() || activeBatch.future().isDone());
         if (activeTarget) {
             var activeSections = activeBatch.snapshot().targetSections(key);
             if (sections == null || activeSections == null) sections = null;
@@ -394,6 +460,10 @@ public final class LightPropagator {
         } else {
             var pending = pendingSections.get(key);
             if (pending != null) pending.addAll(sections);
+        }
+        if (activeTarget && !deferred && activeBatch != null && activeBatch.dynamic()) {
+            requeueActiveBatch();
+            return;
         }
         if (activeTarget && !deferred) {
             boolean validTarget = false;
@@ -434,7 +504,7 @@ public final class LightPropagator {
         int groupX = anchored ? SectionPos.x(preferred.getAsLong()) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT : 0;
         int groupZ = anchored ? SectionPos.z(preferred.getAsLong()) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT : 0;
         int groupSize = 1 << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
-        for (int i = 0; i < nearest.size() && versions.size() < ASYNC_BATCH_CHUNKS; i++) {
+        for (int i = 0; i < nearest.size() && (dynamicBatch || versions.size() < ASYNC_BATCH_CHUNKS); i++) {
             long key = nearest.getLong(i);
             int cx = ChunkPos.getX(key), cz = ChunkPos.getZ(key);
             if (firstMeshPending && anchored && (cx < groupX - 1 || cx > groupX + groupSize
