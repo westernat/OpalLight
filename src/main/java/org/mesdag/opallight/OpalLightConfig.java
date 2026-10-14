@@ -8,7 +8,7 @@ public final class OpalLightConfig {
 
     static {
         var builder = new ModConfigSpec.Builder();
-        ENABLED = builder.define("enabled", true);
+        ENABLED = builder.translation("opallight.configuration.enabled").define("enabled", true);
         SPEC = builder.build();
     }
 
