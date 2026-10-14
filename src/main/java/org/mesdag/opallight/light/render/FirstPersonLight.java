@@ -10,10 +10,10 @@ public final class FirstPersonLight {
     }
 
     public static MultiBufferSource color(MultiBufferSource source) {
-        if (LightColorCache.INSTANCE.isEmpty()) return source;
+        if (LightColorCache.current().isEmpty()) return source;
         var player = Minecraft.getInstance().player;
         if (player == null) return source;
-        long color = LightColorCache.INSTANCE.sample(player.getX(), player.getEyeY() - 0.3, player.getZ());
+        long color = LightColorCache.current().sample(player.getX(), player.getEyeY() - 0.3, player.getZ());
         return color != 0 ? new ColoredLightBufferSource(source, color) : source;
     }
 }

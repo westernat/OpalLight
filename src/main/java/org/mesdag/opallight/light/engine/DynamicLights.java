@@ -21,7 +21,6 @@ public final class DynamicLights {
     private static volatile List<Registration> collectors = List.of();
     private static final Set<Handle> handles = ConcurrentHashMap.newKeySet();
     private static long nextKey = Long.MIN_VALUE;
-    private static @Nullable ClientLevel activeLevel;
 
     private DynamicLights() {
     }
@@ -110,18 +109,11 @@ public final class DynamicLights {
     }
 
     static void collect(ClientLevel level, Long2ObjectOpenHashMap<LightSource> target) {
-        if (activeLevel != level) {
-            for (var handle : handles) {
-                var source = handle.source;
-                if (source != null && source.level != level) handle.close();
-            }
-            for (var registration : collectors) registration.reset();
-            activeLevel = level;
-        }
         for (var handle : handles) {
             var source = handle.source;
             if (source == null) continue;
-            if (source.level != level || level.getGameTime() >= source.expiresAt) {
+            if (source.level != level) continue;
+            if (level.getGameTime() >= source.expiresAt) {
                 handle.close();
                 continue;
             }
@@ -132,13 +124,16 @@ public final class DynamicLights {
             }
             target.put(handle.key, source.light());
         }
-        for (var registration : collectors) registration.collect(level, target);
+        for (var registration : collectors)
+            registration.worlds.computeIfAbsent(level, ignored -> new Registration(registration.id, registration.collector)).collect(level, target);
     }
 
-    static void clear() {
-        for (var handle : handles) handle.close();
-        for (var registration : collectors) registration.reset();
-        activeLevel = null;
+    public static void clear(ClientLevel level) {
+        for (var handle : handles) {
+            var source = handle.source;
+            if (source != null && source.level == level) handle.close();
+        }
+        for (var registration : collectors) registration.worlds.remove(level);
     }
 
     private static long allocateKey(Long2ObjectOpenHashMap<LightSource> target) {
@@ -180,6 +175,7 @@ public final class DynamicLights {
     private static final class Registration implements Sink {
         private final ResourceLocation id;
         private final Collector collector;
+        private final Map<ClientLevel, Registration> worlds = new java.util.IdentityHashMap<>();
         private final Map<Identity, Tracked> tracked = new HashMap<>();
         private final Map<Identity, LightSource> pending = new HashMap<>();
         private final Map<Long, Line> lines = new HashMap<>();
@@ -217,12 +213,6 @@ public final class DynamicLights {
                 }
                 target.put(previous.key, previous.light);
             }
-        }
-
-        void reset() {
-            tracked.clear();
-            pending.clear();
-            lines.clear();
         }
 
         @Override

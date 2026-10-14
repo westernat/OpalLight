@@ -1,16 +1,15 @@
 package org.mesdag.opallight.mixin;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.chunk.LightChunkGetter;
 import net.minecraft.world.level.lighting.BlockLightEngine;
 import net.minecraft.world.level.lighting.LightEngine;
+import org.mesdag.opallight.OpalLightConfig;
 import org.mesdag.opallight.light.engine.LightColorCache;
-import org.mesdag.opallight.light.engine.LightPropagator;
-import org.mesdag.opallight.light.render.LightMaskMeshCache;
+import org.mesdag.opallight.light.render.LightWorld;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -40,18 +39,19 @@ public abstract class LightEngineMixin {
     @Inject(method = "runLightUpdates", at = @At("HEAD"))
     private void onHead(CallbackInfoReturnable<Integer> cir) {
         if (opalLight$isInValid || blockNodesToCheck.isEmpty()) return;
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
+        ClientLevel level = chunkSource.getLevel() instanceof ClientLevel client ? client : null;
+        if (level == null || !OpalLightConfig.isEnabled()) return;
+        var world = LightWorld.get(level);
         for (long packedPos : blockNodesToCheck) {
             BlockPos pos = BlockPos.of(packedPos);
-            boolean affected = LightPropagator.isNearAffectedSection(LightColorCache.sectionKey(pos));
-            boolean sourceChanged = LightPropagator.updateSource(level, pos, level.getBlockState(pos));
+            boolean affected = world.propagator().isNearAffectedSection(LightColorCache.sectionKey(pos));
+            boolean sourceChanged = world.propagator().updateSource(level, pos, level.getBlockState(pos));
             if (!affected && !sourceChanged) continue;
-            if (affected && LightColorCache.INSTANCE.hasColorNear(pos)) {
-                LightMaskMeshCache.markLightingChanged(packedPos);
+            if (affected && world.colors().hasColorNear(pos)) {
+                world.meshes().markLightingChanged(packedPos);
             }
             // checkBlock 也可能来自未改变 BlockState 的动态遮挡；原版检查不能只刷新模型。
-            LightPropagator.scheduleAround(pos);
+            world.propagator().scheduleAround(pos);
         }
     }
 }

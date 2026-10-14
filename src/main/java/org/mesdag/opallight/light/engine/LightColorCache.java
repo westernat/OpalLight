@@ -3,24 +3,39 @@ package org.mesdag.opallight.light.engine;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
+import org.mesdag.opallight.OpalLightConfig;
 import org.mesdag.opallight.light.color.LightColorData;
 import org.mesdag.opallight.light.color.LightColorSampler;
+import org.mesdag.opallight.light.render.LightWorld;
 
 import java.util.function.LongConsumer;
 
 public final class LightColorCache {
-    public static final LightColorCache INSTANCE = new LightColorCache();
+    private static final LightColorCache EMPTY = new LightColorCache(null);
+    private final @Nullable ClientLevel level;
+
+    public static LightColorCache get(@Nullable Level level) {
+        if (!OpalLightConfig.isEnabled() || !(level instanceof ClientLevel client)) return EMPTY;
+        return LightWorld.get(client).colors();
+    }
+
+    public static LightColorCache current() {
+        return get(Minecraft.getInstance() == null ? null : Minecraft.getInstance().level);
+    }
 
     // 已发布分段只替换、不修改，工作线程可持有旧引用。
     private final Long2ObjectOpenHashMap<Long2LongOpenHashMap> sections = new Long2ObjectOpenHashMap<>();
     private final LightColorSampler sampler = new LightColorSampler(this::colorAt, false);
     private final float[] sampled = new float[3];
 
-    private LightColorCache() {
+    public LightColorCache(@Nullable ClientLevel level) {
+        this.level = level;
     }
 
     public boolean isEmpty() {
@@ -64,7 +79,7 @@ public final class LightColorCache {
     }
 
     public long sample(double x, double y, double z) {
-        return sample(Minecraft.getInstance().level, x, y, z);
+        return sample(level, x, y, z);
     }
 
     long sample(@Nullable BlockGetter view, double x, double y, double z) {
