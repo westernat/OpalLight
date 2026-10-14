@@ -2,6 +2,7 @@ package org.mesdag.opallight.light.data;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.DataResult;
 import com.mojang.serialization.Dynamic;
@@ -135,7 +136,7 @@ public final class LightStatePredicate {
                 var expected = TagParser.parseTag(string(value));
                 return (stack, entity) -> expected.isEmpty()
                     || NbtUtils.compareNbt(expected, entity.saveWithoutId(new CompoundTag()), true);
-            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException error) {
+            } catch (CommandSyntaxException error) {
                 throw new IllegalArgumentException("Invalid entity NBT: " + error.getMessage());
             }
         }
@@ -143,7 +144,7 @@ public final class LightStatePredicate {
             try {
                 var expected = TagParser.parseTag(string(value));
                 return (stack, entity) -> NbtUtils.compareNbt(expected, entity.getPersistentData(), true);
-            } catch (com.mojang.brigadier.exceptions.CommandSyntaxException error) {
+            } catch (CommandSyntaxException error) {
                 throw new IllegalArgumentException("Invalid entity persistent data: " + error.getMessage());
             }
         }

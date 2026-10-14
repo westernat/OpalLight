@@ -6,6 +6,7 @@ import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
 import net.minecraftforge.client.event.RegisterShadersEvent;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
@@ -96,7 +97,7 @@ public final class LightManager {
     }
 
     @SubscribeEvent
-    public static void loggingOut(net.minecraftforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+    public static void loggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         LightWorld.clear();
         previousShaderPackMode = null;
     }

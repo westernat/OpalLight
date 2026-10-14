@@ -32,10 +32,7 @@ import net.minecraftforge.client.model.data.ModelDataManager;
 import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.light.engine.LightColorCache;
 
-import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
@@ -193,7 +190,7 @@ final class LightMaskMeshBuilder {
         for (var entry : current.long2ObjectEntrySet()) {
             BlockMesh old = previous.get(entry.getLongKey());
             if (old == null || old.vertexOffset() != entry.getValue().vertexOffset()
-                || !java.util.Arrays.equals(old.vertices(), entry.getValue().vertices())) return false;
+                || !Arrays.equals(old.vertices(), entry.getValue().vertices())) return false;
         }
         return true;
     }
@@ -364,7 +361,7 @@ final class LightMaskMeshBuilder {
             }
         }
         return encoded.position() == 0 ? EMPTY_VERTICES
-            : java.util.Arrays.copyOf(encoded.array(), encoded.position());
+            : Arrays.copyOf(encoded.array(), encoded.position());
     }
 
     // 采样范围必须包含模型偏移与越界顶点。

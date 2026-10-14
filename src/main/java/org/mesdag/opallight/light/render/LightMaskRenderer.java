@@ -16,6 +16,10 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL31;
+
+import java.util.Arrays;
 
 import static org.mesdag.opallight.light.engine.LightMeshLayout.GROUP_XZ_BLOCK_SHIFT;
 import static org.mesdag.opallight.light.engine.LightMeshLayout.GROUP_Y_BLOCK_SHIFT;
@@ -71,9 +75,9 @@ final class LightMaskRenderer {
         program.apply(viewMatrix, projectionMatrix);
         int activeTexture = 0, previousColorBinding = 0;
         if (gpuTransitions) {
-            activeTexture = GL11.glGetInteger(org.lwjgl.opengl.GL13.GL_ACTIVE_TEXTURE);
-            GlStateManager._activeTexture(org.lwjgl.opengl.GL13.GL_TEXTURE1);
-            previousColorBinding = GL11.glGetInteger(org.lwjgl.opengl.GL31.GL_TEXTURE_BINDING_BUFFER);
+            activeTexture = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
+            GlStateManager._activeTexture(GL13.GL_TEXTURE1);
+            previousColorBinding = GL11.glGetInteger(GL31.GL_TEXTURE_BINDING_BUFFER);
         }
         // Iris 在 apply() 后锁定深度与颜色写入，绘制前需临时解锁。
         boolean reclaimedState = LightShaderCompatibility.reclaimDepthColorState();
@@ -108,7 +112,7 @@ final class LightMaskRenderer {
             drawVisibleBuffers(groupOffset, transitionWeight, program.blendVertexColors, visibleGroups.size(), true);
         } finally {
             if (gpuTransitions) {
-                GL11.glBindTexture(org.lwjgl.opengl.GL31.GL_TEXTURE_BUFFER, previousColorBinding);
+                GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, previousColorBinding);
                 GlStateManager._activeTexture(activeTexture);
             }
             GlStateManager._colorMask(true, true, true, true);
@@ -122,8 +126,8 @@ final class LightMaskRenderer {
             LightShaderCompatibility.restoreDepthColorState(reclaimedState);
             lightMaskShader.clear();
             VertexBuffer.unbind();
-            java.util.Arrays.fill(drawBuffers, 0, visibleGroups.size(), null);
-            java.util.Arrays.fill(previousBuffers, 0, visibleGroups.size(), null);
+            Arrays.fill(drawBuffers, 0, visibleGroups.size(), null);
+            Arrays.fill(previousBuffers, 0, visibleGroups.size(), null);
         }
     }
 
@@ -168,7 +172,7 @@ final class LightMaskRenderer {
                 uploadedMode = mode;
             }
             if (mode != 0) {
-                GL11.glBindTexture(org.lwjgl.opengl.GL31.GL_TEXTURE_BUFFER, previousColors[i]);
+                GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, previousColors[i]);
             }
             groupOffset.set(drawOffsets[i * 3], drawOffsets[i * 3 + 1], drawOffsets[i * 3 + 2]);
             groupOffset.upload();

@@ -1,5 +1,6 @@
 package org.mesdag.opallight.light.render;
 
+import net.minecraft.util.Mth;
 final class LightFalloff {
     static final float EDGE_FADE_STRENGTH = 3.0F / 15.0F;
 
@@ -11,7 +12,7 @@ final class LightFalloff {
     }
 
     private static float smoothstep(float value) {
-        float t = net.minecraft.util.Mth.clamp(value, 0.0F, 1.0F);
+        float t = Mth.clamp(value, 0.0F, 1.0F);
         return t * t * (3.0F - 2.0F * t);
     }
 }

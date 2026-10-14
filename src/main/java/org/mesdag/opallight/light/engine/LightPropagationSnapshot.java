@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.objects.ObjectIntPair;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.BlockGetter;
@@ -97,7 +98,7 @@ final class LightPropagationSnapshot implements BlockGetter {
 
     static LightPropagationSnapshot capture(LightColorCache cache, Level level, LongOpenHashSet requested,
                                             Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
-                                            Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<LightProfile>>> indexedSources,
+                                            Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>>> indexedSources,
                                             Long2ObjectOpenHashMap<List<LightSource>> dynamicSources) {
         LongOpenHashSet targets = new LongOpenHashSet(requested);
         LongOpenHashSet scanned = new LongOpenHashSet();

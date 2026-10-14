@@ -3,6 +3,7 @@ package org.mesdag.opallight.light.color;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.lighting.LightEngine;
@@ -51,8 +52,8 @@ public final class LightColorSampler {
         int reachable = 255;
         int equivalentAnchors = 255;
         if (view != null) {
-            int seed = net.minecraft.util.Mth.clamp(anchorX - bx, 0, 1) | net.minecraft.util.Mth.clamp(anchorY - by, 0, 1) << 1
-                | net.minecraft.util.Mth.clamp(anchorZ - bz, 0, 1) << 2;
+            int seed = Mth.clamp(anchorX - bx, 0, 1) | Mth.clamp(anchorY - by, 0, 1) << 1
+                | Mth.clamp(anchorZ - bz, 0, 1) << 2;
             reachable = 1 << seed;
             int frontier = reachable;
             while (frontier != 0) {

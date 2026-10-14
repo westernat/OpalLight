@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.BlockGetter;
 import org.mesdag.opallight.light.color.LightColorSampler;
 import org.mesdag.opallight.light.engine.LightMeshLayout;
@@ -63,9 +64,9 @@ final class LightMeshColorGrid {
         // 普通方块共享半格采样点；任意偏移模型沿用完整采样。
         if (ix == hx && iy == hy && iz == hz && ix >= 0 && ix < WIDTH * 2
             && iy >= 0 && iy < HEIGHT * 2 && iz >= 0 && iz < WIDTH * 2) {
-            int seed = net.minecraft.util.Mth.clamp(anchorX - (int) Math.floor(x - .5), 0, 1)
-                | net.minecraft.util.Mth.clamp(anchorY - (int) Math.floor(y - .5), 0, 1) << 1
-                | net.minecraft.util.Mth.clamp(anchorZ - (int) Math.floor(z - .5), 0, 1) << 2;
+            int seed = Mth.clamp(anchorX - (int) Math.floor(x - .5), 0, 1)
+                | Mth.clamp(anchorY - (int) Math.floor(y - .5), 0, 1) << 1
+                | Mth.clamp(anchorZ - (int) Math.floor(z - .5), 0, 1) << 2;
             long key = ix | (long) iy << 16 | (long) iz << 32 | (long) seed << 48;
             int offset = sampleOffsets.get(key) - 1;
             if (offset >= 0) {

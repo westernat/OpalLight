@@ -1,6 +1,7 @@
 package org.mesdag.opallight.light.data;
 
 import com.google.gson.JsonElement;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtUtils;
@@ -40,7 +41,7 @@ final class LightItemState {
         try {
             var expected = TagParser.parseTag(value);
             return (stack, entity) -> expected.isEmpty() || NbtUtils.compareNbt(expected, stack.getTag(), true);
-        } catch (com.mojang.brigadier.exceptions.CommandSyntaxException exception) {
+        } catch (CommandSyntaxException exception) {
             throw new IllegalArgumentException("Invalid item NBT: " + exception.getMessage());
         }
     }
