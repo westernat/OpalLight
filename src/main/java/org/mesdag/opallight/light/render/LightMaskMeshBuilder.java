@@ -229,7 +229,8 @@ final class LightMaskMeshBuilder {
                     blockGeometry = consumer.vertices();
                 }
                 byte[] vertices = encodeLightData(blockGeometry, colors, region, sampled, output, encoded, packed, minX, minY, minZ);
-                if (vertices.length != 0) {
+                // 保留当前光照边缘的几何，光源移动后可直接重算颜色。
+                if (blockGeometry.length != 0) {
                     LightUpdateBounds samples = previous != null && blockGeometry == previous.geometry()
                         ? previous.samples() : sampleBounds(blockGeometry, packed);
                     geometry.put(packed, new BlockMesh(blockGeometry, vertices, samples, vertexCount));

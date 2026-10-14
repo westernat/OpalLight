@@ -382,6 +382,10 @@ public final class LightMaskMeshCache {
         return selected;
     }
 
+    static void finishCompletedMeshes(ClientLevel level) {
+        processAsync(level, null, false, unused -> false);
+    }
+
     private static void processAsync(ClientLevel level, @Nullable Frustum frustum, boolean schedule,
                                      LongPredicate propagationPending) {
         RenderRegionCache regions = schedule && !dirtyGroups.isEmpty() ? new RenderRegionCache() : null;

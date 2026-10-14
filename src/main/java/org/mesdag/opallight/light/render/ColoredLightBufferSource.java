@@ -1,15 +1,27 @@
 package org.mesdag.opallight.light.render;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.mojang.blaze3d.vertex.VertexFormatElement;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.blockentity.BeaconRenderer;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.FastColor;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.light.engine.LightColorCache;
 
+import java.util.Set;
+
 public final class ColoredLightBufferSource implements MultiBufferSource {
+    // 光束沿用 BLOCK 格式，但不使用光照贴图。
+    private static final Set<RenderType> UNLIT_BEAMS = Set.of(
+            RenderType.beaconBeam(BeaconRenderer.BEAM_LOCATION, false),
+            RenderType.beaconBeam(BeaconRenderer.BEAM_LOCATION, true),
+            RenderType.beaconBeam(ResourceLocation.tryParse("minecraft:textures/entity/end_gateway_beam.png"), false),
+            RenderType.beaconBeam(ResourceLocation.tryParse("minecraft:textures/entity/end_gateway_beam.png"), true));
+
     private final MultiBufferSource delegate;
     private final @Nullable Vec3 cameraPos;
     private final long fixedColor;
@@ -28,7 +40,10 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
     @Override
     public VertexConsumer getBuffer(RenderType renderType) {
-        return new ColoredVertexConsumer(delegate.getBuffer(renderType), cameraPos, fixedColor);
+        VertexConsumer output = delegate.getBuffer(renderType);
+        // 无光照贴图的通道保持原缓冲区，兼容光束等批量绘制路径。
+        return !UNLIT_BEAMS.contains(renderType) && renderType.format().contains(VertexFormatElement.UV2)
+                ? new ColoredVertexConsumer(output, cameraPos, fixedColor) : output;
     }
 
     public static VertexConsumer unwrap(VertexConsumer consumer) {

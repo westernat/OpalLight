@@ -55,11 +55,11 @@ public final class LightManager {
     }
 
     @SubscribeEvent
-    public static void clientTick$Pre(ClientTickEvent.Pre event) {
+    public static void clientTick$Post(ClientTickEvent.Post event) {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null) return;
         updateShaderPackMode();
-        // 先发布已完成的快照，再采集本刻的移动，减少动态光一刻的延迟。
+        // 实体更新后采集本刻位置，先发布已完成的批次再追赶最新移动。
         updateLighting(level);
         LightPropagator.updateDynamicSources(level);
         LightPropagator.scheduleCyclingSources(level);
@@ -147,11 +147,15 @@ public final class LightManager {
 
     private static void updateLighting(ClientLevel level) {
         if (LightPropagator.consumeDynamicInvalidation()) LightMaskMeshCache.invalidateDynamicBatch();
-        // 当前动态批次完成前固定颜色快照，持续移动只排入下一次传播。
-        if (LightMaskMeshCache.hasPendingDynamicBatch()) return;
+        LightMaskMeshCache.finishCompletedMeshes(level);
         boolean firstMeshPending = !LightMaskMeshCache.hasMeshes();
         Supplier<OptionalLong> preferred = () ->
                 LightMaskMeshCache.firstVisiblePropagationGroup(level, LightPropagator::isGroupPropagationPending);
+        // 网格构建期间允许下一批传播计算，结果留待当前网格整批发布后提交。
+        if (LightMaskMeshCache.hasPendingDynamicBatch()) {
+            LightPropagator.flushPending(level, firstMeshPending, preferred, false);
+            return;
+        }
         var commit = LightPropagator.flushPending(level, firstMeshPending, preferred);
         if (commit != null) {
             LightMaskMeshCache.beginDirtyBatch(commit.dynamic());
@@ -165,7 +169,7 @@ public final class LightManager {
                 LightMaskMeshCache.endDirtyBatch();
             }
             // 发布完成后才允许捕获下一份传播快照。
-            if (!LightMaskMeshCache.hasPendingDynamicBatch()) LightPropagator.flushPending(level, firstMeshPending, preferred);
+            LightPropagator.flushPending(level, firstMeshPending, preferred, false);
         }
         if (!LightPropagator.hasPendingUpdates()) LightMaskMeshCache.resumeDynamicBatch();
         if (reloadInProgress) reloadInProgress = LightPropagator.hasPendingUpdates();

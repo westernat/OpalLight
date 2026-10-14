@@ -340,9 +340,14 @@ public final class LightPropagator {
 
     public static @Nullable Commit flushPending(Level level, boolean firstMeshPending,
                                                 Supplier<OptionalLong> preferredGroup) {
+        return flushPending(level, firstMeshPending, preferredGroup, true);
+    }
+
+    public static @Nullable Commit flushPending(Level level, boolean firstMeshPending,
+                                                Supplier<OptionalLong> preferredGroup, boolean allowCommit) {
         Commit commit = null;
         if (activeBatch != null) {
-            if (!activeBatch.future().isDone()) return null;
+            if (!allowCommit || !activeBatch.future().isDone()) return null;
             ActiveBatch finished = activeBatch;
             activeBatch = null;
             if (finished.level() == level) commit = commitAsync(level, finished);
