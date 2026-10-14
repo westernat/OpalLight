@@ -1,0 +1,5 @@
+{
+    "opallight.configuration.title": "蛋白石之光配置",
+    "opallight.configuration.enabled": "启用彩色光照",
+    "opallight.configuration.enabled.tooltip": "启用彩色光照的计算与渲染。关闭后停止彩光更新与绘制。"
+}

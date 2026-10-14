@@ -1,0 +1,5 @@
+{
+    "opallight.configuration.title": "Opal Light Configuration",
+    "opallight.configuration.enabled": "Enable Colored Lighting",
+    "opallight.configuration.enabled.tooltip": "Enable colored lighting calculations and rendering. When disabled, colored lighting stops updating and rendering."
+}
