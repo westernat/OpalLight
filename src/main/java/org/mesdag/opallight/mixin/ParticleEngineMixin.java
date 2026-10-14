@@ -14,9 +14,9 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 public abstract class ParticleEngineMixin {
     @ModifyArg(method = "render(Lnet/minecraft/client/renderer/LightTexture;Lnet/minecraft/client/Camera;FLnet/minecraft/client/renderer/culling/Frustum;Ljava/util/function/Predicate;)V", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/particle/Particle;render(Lcom/mojang/blaze3d/vertex/VertexConsumer;Lnet/minecraft/client/Camera;F)V"))
     private VertexConsumer colorParticle(VertexConsumer output, @Local Particle particle) {
-        if (LightColorCache.INSTANCE.isEmpty()) return output;
+        if (LightColorCache.current().isEmpty()) return output;
         var position = particle.getPos();
-        long color = LightColorCache.INSTANCE.sample(position.x, position.y, position.z);
+        long color = LightColorCache.current().sample(position.x, position.y, position.z);
         return ColoredLightBufferSource.wrapFixed(output, color);
     }
 }

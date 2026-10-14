@@ -7,8 +7,9 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import org.mesdag.opallight.light.engine.LightColorCache;
-import org.mesdag.opallight.light.engine.LightPropagator;
-import org.mesdag.opallight.light.render.LightMaskMeshCache;
+import org.mesdag.opallight.light.render.LightWorld;
+import org.mesdag.opallight.OpalLightConfig;
+import net.minecraft.client.multiplayer.ClientLevel;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -26,13 +27,14 @@ public class LevelChunkMixin {
             @Local(argsOnly = true) BlockPos pos,
             @Local(argsOnly = true) BlockState state
     ) {
-        if (level.isClientSide) {
+        if (OpalLightConfig.isEnabled() && level instanceof ClientLevel client) {
+            var world = LightWorld.get(client);
             // 光源移除后旧几何仍可能留在缓存中，方块变化不能依赖当前是否有彩光。
-            LightMaskMeshCache.invalidateChangedGeometry(pos.asLong());
+            world.meshes().invalidateChangedGeometry(pos.asLong());
             long key = LightColorCache.sectionKey(pos);
-            boolean affected = LightPropagator.isNearAffectedSection(key);
-            boolean sourceChanged = LightPropagator.updateSource(level, pos, state);
-            if (sourceChanged || affected && original) LightPropagator.scheduleAround(pos);
+            boolean affected = world.propagator().isNearAffectedSection(key);
+            boolean sourceChanged = world.propagator().updateSource(level, pos, state);
+            if (sourceChanged || affected && original) world.propagator().scheduleAround(pos);
         }
         return original;
     }

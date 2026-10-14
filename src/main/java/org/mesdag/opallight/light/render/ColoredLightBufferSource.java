@@ -25,6 +25,7 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
     private final MultiBufferSource delegate;
     private final @Nullable Vec3 cameraPos;
     private final long fixedColor;
+    private final LightColorCache colors = LightColorCache.current();
 
     public ColoredLightBufferSource(MultiBufferSource delegate, Vec3 cameraPos) {
         this.delegate = delegate;
@@ -43,7 +44,7 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
         VertexConsumer output = delegate.getBuffer(renderType);
         // 无光照贴图的通道保持原缓冲区，兼容光束等批量绘制路径。
         return !UNLIT_BEAMS.contains(renderType) && renderType.format().contains(VertexFormatElement.UV2)
-                ? new ColoredVertexConsumer(output, cameraPos, fixedColor) : output;
+                ? new ColoredVertexConsumer(output, cameraPos, fixedColor, colors) : output;
     }
 
     public static VertexConsumer unwrap(VertexConsumer consumer) {
@@ -73,18 +74,29 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
     private static final class ColoredVertexConsumer implements VertexConsumer {
         private VertexConsumer output;
         private final @Nullable Vec3 cameraPos;
+        private final LightColorCache colors;
         private float red = 1.0F, green = 1.0F, blue = 1.0F;
         private float strength;
         private final float skyBrightness, ambientLight;
 
         private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor) {
+            this(output, cameraPos, fixedColor, LightColorCache.current());
+        }
+
+        private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor, LightColorCache colors) {
             this(output, cameraPos, fixedColor,
                     LightBrightness.skyBrightness(Minecraft.getInstance() == null ? null : Minecraft.getInstance().level),
-                    LightBrightness.ambientLight(Minecraft.getInstance() == null ? null : Minecraft.getInstance().level));
+                    LightBrightness.ambientLight(Minecraft.getInstance() == null ? null : Minecraft.getInstance().level), colors);
         }
 
         private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor,
                                       float skyBrightness, float ambientLight) {
+            this(output, cameraPos, fixedColor, skyBrightness, ambientLight, LightColorCache.current());
+        }
+
+        private ColoredVertexConsumer(VertexConsumer output, @Nullable Vec3 cameraPos, long fixedColor,
+                                      float skyBrightness, float ambientLight, LightColorCache colors) {
+            this.colors = colors;
             this.output = output;
             this.cameraPos = cameraPos;
             this.skyBrightness = skyBrightness;
@@ -151,7 +163,7 @@ public final class ColoredLightBufferSource implements MultiBufferSource {
 
         private void sampleAt(float x, float y, float z) {
             if (cameraPos != null)
-                updateColor(LightColorCache.INSTANCE.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z));
+                updateColor(colors.sample(cameraPos.x + x, cameraPos.y + y, cameraPos.z + z));
         }
 
         private int tintedColor(int color) {

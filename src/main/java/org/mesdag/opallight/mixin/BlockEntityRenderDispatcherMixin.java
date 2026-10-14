@@ -16,7 +16,7 @@ public abstract class BlockEntityRenderDispatcherMixin {
     @ModifyArg(method = "setupAndRender", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/renderer/blockentity/BlockEntityRenderer;render(Lnet/minecraft/world/level/block/entity/BlockEntity;FLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;II)V"))
     private static MultiBufferSource colorBlockEntity(MultiBufferSource source, @Local(argsOnly = true) BlockEntity entity) {
         if (entity.getLevel() == null) return source;
-        long color = LightColorCache.INSTANCE.colorAtBlockEntity(entity.getBlockPos());
+        long color = LightColorCache.get(entity.getLevel()).colorAtBlockEntity(entity.getBlockPos());
         return color == 0 ? source : new ColoredLightBufferSource(source, Minecraft.getInstance().gameRenderer.getMainCamera().getPosition());
     }
 }

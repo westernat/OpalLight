@@ -65,7 +65,7 @@ final class LightMaskMeshBuilder {
         }
     }
 
-    static @Nullable MeshSnapshot snapshot(ClientLevel level, long key, long epoch, RenderRegionCache regionCache) {
+    static @Nullable MeshSnapshot snapshot(LightColorCache colors, ClientLevel level, long key, long epoch, RenderRegionCache regionCache) {
         int sx = SectionPos.x(key) << GROUP_XZ_SECTION_SHIFT;
         int sy = SectionPos.y(key) << GROUP_Y_SECTION_SHIFT;
         int sz = SectionPos.z(key) << GROUP_XZ_SECTION_SHIFT;
@@ -73,7 +73,7 @@ final class LightMaskMeshBuilder {
         for (int dx = -1; dx <= 2; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -1; dz <= 2; dz++) {
-                    var lit = LightColorCache.INSTANCE.getSection(SectionPos.asLong(sx + dx, sy + dy, sz + dz));
+                    var lit = colors.getSection(SectionPos.asLong(sx + dx, sy + dy, sz + dz));
                     if (lit == null) continue;
                     colorSections.add(lit);
                 }

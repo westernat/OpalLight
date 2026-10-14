@@ -17,8 +17,8 @@ import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.OpalLight;
+import org.mesdag.opallight.OpalLightConfig;
 import org.mesdag.opallight.light.data.LightDataLoader;
-import org.mesdag.opallight.light.engine.LightColorCache;
 import org.mesdag.opallight.light.engine.LightPropagator;
 
 import java.io.IOException;
@@ -28,7 +28,7 @@ import java.util.function.Supplier;
 @EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightManager {
     static LightMaskShader lightMaskShader;
-    private static boolean reloadInProgress;
+    private static boolean enabled = true;
     private static @Nullable Boolean previousShaderPackMode;
 
     @SubscribeEvent
@@ -56,54 +56,64 @@ public final class LightManager {
 
     @SubscribeEvent
     public static void clientTick$Post(ClientTickEvent.Post event) {
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
+        if (Minecraft.getInstance().level == null) return;
+        boolean current = OpalLightConfig.isEnabled();
+        if (current != enabled) {
+            enabled = current;
+            for (var world : LightWorld.all()) {
+                world.reset();
+                if (enabled) world.reindex();
+            }
+        }
+        if (!enabled) return;
         updateShaderPackMode();
-        // 实体更新后采集本刻位置，先发布已完成的批次再追赶最新移动。
-        updateLighting(level);
-        LightPropagator.updateDynamicSources(level);
-        LightPropagator.scheduleCyclingSources(level);
-        updateLighting(level);
+        for (var world : LightWorld.all()) {
+            updateLighting(world);
+            world.propagator().updateDynamicSources(world.level);
+            world.propagator().scheduleCyclingSources(world.level);
+            updateLighting(world);
+        }
     }
 
     @SubscribeEvent
     public static void chunk$Load(ChunkEvent.Load event) {
-        if (!event.getLevel().isClientSide()) return;
+        if (!(event.getLevel() instanceof ClientLevel level)) return;
+        var world = LightWorld.get(level);
         ChunkPos cp = event.getChunk().getPos();
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
-        LightPropagator.indexChunk(level, cp);
-        LightMaskMeshCache.refreshLoadedChunk(cp);
-        LightPropagator.scheduleChunkAndNeighbors(cp.x, cp.z);
+        world.loadedChunks.add(cp.toLong());
+        if (!OpalLightConfig.isEnabled()) return;
+        world.propagator().indexChunk(level, cp);
+        world.meshes().refreshLoadedChunk(cp);
+        world.propagator().scheduleChunkAndNeighbors(cp.x, cp.z);
     }
 
     @SubscribeEvent
     public static void chunk$Unload(ChunkEvent.Unload event) {
-        if (!event.getLevel().isClientSide()) return;
+        if (!(event.getLevel() instanceof ClientLevel level)) return;
+        var world = LightWorld.get(level);
         ChunkPos cp = event.getChunk().getPos();
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
+        world.loadedChunks.remove(cp.toLong());
+        if (!OpalLightConfig.isEnabled()) return;
         int minSY = SectionPos.blockToSectionCoord(level.getMinBuildHeight());
         int maxSY = SectionPos.blockToSectionCoord(level.getMaxBuildHeight() - 1);
         for (int sy = minSY; sy <= maxSY; sy++) {
             SectionPos section = SectionPos.of(cp.x, sy, cp.z);
-            if (LightColorCache.INSTANCE.clearSection(section)) LightMaskMeshCache.markDirtyAroundSection(section.asLong());
+            if (world.colors().clearSection(section)) world.meshes().markDirtyAroundSection(section.asLong());
         }
-        LightMaskMeshCache.discardChunk(cp);
-        LightPropagator.forgetChunk(cp);
-        LightPropagator.scheduleChunkAndNeighbors(cp.x, cp.z);
+        world.meshes().discardChunk(cp);
+        world.propagator().forgetChunk(cp);
+        world.propagator().scheduleChunkAndNeighbors(cp.x, cp.z);
     }
 
     @SubscribeEvent
     public static void level$Unload(LevelEvent.Unload event) {
-        if (event.getLevel().isClientSide()) {
-            LightColorCache.INSTANCE.clearAll();
-            LightPropagator.clearAllSources();
-            LightMaskMeshCache.invalidate();
-            LightMaskRenderer.clearTerrainFog();
-            reloadInProgress = false;
-            previousShaderPackMode = null;
-        }
+        if (event.getLevel() instanceof ClientLevel level) LightWorld.unload(level);
+    }
+
+    @SubscribeEvent
+    public static void loggingOut(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+        LightWorld.clear();
+        previousShaderPackMode = null;
     }
 
     // 在光影包合成后叠加，避免彩光被当作材质颜色再次参与光照。
@@ -111,67 +121,69 @@ public final class LightManager {
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
         ClientLevel level = Minecraft.getInstance().level;
-        if (level == null || lightMaskShader == null) return;
-        updateLighting(level);
-        LightMaskMeshCache.draw(event.getModelViewMatrix(), event.getProjectionMatrix(), event.getCamera(), lightMaskShader,
-                reloadInProgress, LightPropagator::isGroupPropagationPending);
+        if (level == null || lightMaskShader == null || !OpalLightConfig.isEnabled()) return;
+        var world = LightWorld.get(level);
+        updateLighting(world);
+        world.meshes().draw(event.getModelViewMatrix(), event.getProjectionMatrix(), event.getCamera(), lightMaskShader,
+                world.reloadInProgress, world.propagator()::isGroupPropagationPending);
     }
 
     public static void captureTerrainFog() {
-        LightMaskRenderer.captureTerrainFog();
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level != null && OpalLightConfig.isEnabled()) LightWorld.get(level).meshes().captureTerrainFog();
     }
 
     private static void beginResourceReload() {
-        boolean previousReloadInProgress = reloadInProgress;
-        reloadInProgress = false;
         LightPropagator.clearDefinitions();
-        ClientLevel level = Minecraft.getInstance().level;
-        if (level == null) return;
-        int changedSources = LightPropagator.refreshDefinitions(level) + LightPropagator.updateDynamicSources(level);
-        if (changedSources == 0) {
-            reloadInProgress = previousReloadInProgress && LightPropagator.hasPendingUpdates();
-            return;
+        if (!OpalLightConfig.isEnabled()) return;
+        for (var world : LightWorld.all()) {
+            int changedSources = world.propagator().refreshDefinitions(world.level)
+                    + world.propagator().updateDynamicSources(world.level);
+            if (changedSources == 0) continue;
+            world.meshes().beginDefinitionReload();
+            world.reloadInProgress = world.propagator().hasPendingUpdates();
         }
-        LightMaskMeshCache.beginDefinitionReload();
-        reloadInProgress = LightPropagator.hasPendingUpdates();
     }
 
     private static void updateShaderPackMode() {
         boolean current = LightShaderCompatibility.isShaderPackInUse();
         if (previousShaderPackMode != null && previousShaderPackMode != current) {
-            LightMaskMeshCache.invalidate();
-            LightColorCache.INSTANCE.forEachSection(LightMaskMeshCache::markDirtyAroundSection);
+            for (var world : LightWorld.all()) {
+                world.meshes().invalidate();
+                world.colors().forEachSection(world.meshes()::markDirtyAroundSection);
+            }
         }
         previousShaderPackMode = current;
     }
 
-    private static void updateLighting(ClientLevel level) {
-        if (LightPropagator.consumeDynamicInvalidation()) LightMaskMeshCache.invalidateDynamicBatch();
-        LightMaskMeshCache.finishCompletedMeshes(level);
-        boolean firstMeshPending = !LightMaskMeshCache.hasMeshes();
+    private static void updateLighting(LightWorld world) {
+        ClientLevel level = world.level;
+        if (world.propagator().consumeDynamicInvalidation()) world.meshes().invalidateDynamicBatch();
+        world.meshes().finishCompletedMeshes(level);
+        boolean firstMeshPending = !world.meshes().hasMeshes();
         Supplier<OptionalLong> preferred = () ->
-                LightMaskMeshCache.firstVisiblePropagationGroup(level, LightPropagator::isGroupPropagationPending);
+                level != Minecraft.getInstance().level ? OptionalLong.empty() : world.meshes().firstVisiblePropagationGroup(level, world.propagator()::isGroupPropagationPending);
         // 网格构建期间允许下一批传播计算，结果留待当前网格整批发布后提交。
-        if (LightMaskMeshCache.hasPendingDynamicBatch()) {
-            LightPropagator.flushPending(level, firstMeshPending, preferred, false);
+        if (world.meshes().hasPendingDynamicBatch()) {
+            world.propagator().flushPending(level, firstMeshPending, preferred, false);
             return;
         }
-        var commit = LightPropagator.flushPending(level, firstMeshPending, preferred);
+        var commit = world.propagator().flushPending(level, firstMeshPending, preferred);
         if (commit != null) {
-            LightMaskMeshCache.beginDirtyBatch(commit.dynamic());
+            world.meshes().beginDirtyBatch(commit.dynamic());
             try {
                 for (var update : commit.updates()) {
-                    LightColorCache.INSTANCE.apply(update);
-                    LightMaskMeshCache.markColorChanged(update.minX(), update.minY(), update.minZ(),
+                    world.colors().apply(update);
+                    world.meshes().markColorChanged(update.minX(), update.minY(), update.minZ(),
                             update.maxX(), update.maxY(), update.maxZ(), commit.dynamic());
                 }
             } finally {
-                LightMaskMeshCache.endDirtyBatch();
+                world.meshes().endDirtyBatch();
             }
             // 发布完成后才允许捕获下一份传播快照。
-            LightPropagator.flushPending(level, firstMeshPending, preferred, false);
+            world.propagator().flushPending(level, firstMeshPending, preferred, false);
         }
-        if (!LightPropagator.hasPendingUpdates()) LightMaskMeshCache.resumeDynamicBatch();
-        if (reloadInProgress) reloadInProgress = LightPropagator.hasPendingUpdates();
+        if (!world.propagator().hasPendingUpdates()) world.meshes().resumeDynamicBatch();
+        if (world.reloadInProgress) world.reloadInProgress = world.propagator().hasPendingUpdates();
     }
 }

@@ -51,7 +51,7 @@ final class LightPropagationSnapshot implements BlockGetter {
     private boolean unsupported;
     private volatile boolean cancelled;
 
-    private LightPropagationSnapshot(Long2ObjectOpenHashMap<ChunkSections> chunks, LongOpenHashSet targets,
+    private LightPropagationSnapshot(LightColorCache cache, Long2ObjectOpenHashMap<ChunkSections> chunks, LongOpenHashSet targets,
                                      Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
                                      List<LightSource> sources, int minBuildHeight, int height, long gameTime, boolean unsupported) {
         this.chunks = chunks;
@@ -69,7 +69,7 @@ final class LightPropagationSnapshot implements BlockGetter {
             for (int sy = minSection; sy <= (minBuildHeight + height - 1) >> 4; sy++) {
                 long sectionKey = SectionPos.asLong(ChunkPos.getX(key), sy, ChunkPos.getZ(key));
                 if (!targetsSection(sectionKey)) continue;
-                var colors = LightColorCache.INSTANCE.getSection(sectionKey);
+                var colors = cache.getSection(sectionKey);
                 if (colors != null) previousColors.put(sectionKey, colors);
             }
         }
@@ -95,7 +95,7 @@ final class LightPropagationSnapshot implements BlockGetter {
         return sources.isEmpty() && previousColors.isEmpty();
     }
 
-    static LightPropagationSnapshot capture(Level level, LongOpenHashSet requested,
+    static LightPropagationSnapshot capture(LightColorCache cache, Level level, LongOpenHashSet requested,
                                             Long2ObjectOpenHashMap<LongOpenHashSet> restrictedSections,
                                             Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.objects.ObjectIntPair<LightProfile>>> indexedSources,
                                             Long2ObjectOpenHashMap<List<LightSource>> dynamicSources) {
@@ -156,7 +156,7 @@ final class LightPropagationSnapshot implements BlockGetter {
                 unsupported = true;
             }
         }
-        return new LightPropagationSnapshot(chunks, targets,
+        return new LightPropagationSnapshot(cache, chunks, targets,
             restrictedSections, sources, level.getMinBuildHeight(), level.getHeight(), level.getGameTime(), unsupported);
     }
 

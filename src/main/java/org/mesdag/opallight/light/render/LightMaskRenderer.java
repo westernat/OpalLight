@@ -24,24 +24,24 @@ final class LightMaskRenderer {
     private record TerrainFog(float start, float end, float red, float green, float blue,
                               float alpha, FogShape shape) {}
 
-    private static TerrainFog terrainFog;
-    private static VertexBuffer[] drawBuffers = new VertexBuffer[0];
-    private static VertexBuffer[] previousBuffers = new VertexBuffer[0];
-    private static int[] previousColors = new int[0];
-    private static float[] drawOffsets = new float[0];
-    private static float[] transitionWeights = new float[0];
+    private TerrainFog terrainFog;
+    private VertexBuffer[] drawBuffers = new VertexBuffer[0];
+    private VertexBuffer[] previousBuffers = new VertexBuffer[0];
+    private int[] previousColors = new int[0];
+    private float[] drawOffsets = new float[0];
+    private float[] transitionWeights = new float[0];
 
-    static void captureTerrainFog() {
+    void captureTerrainFog() {
         float[] color = RenderSystem.getShaderFogColor();
         terrainFog = new TerrainFog(RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(),
                 color[0], color[1], color[2], color[3], RenderSystem.getShaderFogShape());
     }
 
-    static void clearTerrainFog() {
+    void clearTerrainFog() {
         terrainFog = null;
     }
 
-    static boolean isFullyFogged(AABB box, Vec3 cameraPos) {
+    boolean isFullyFogged(AABB box, Vec3 cameraPos) {
         TerrainFog fog = terrainFog;
         if (fog == null || fog.alpha() < 1.0F || fog.end() <= 0.0F || !Float.isFinite(fog.end())
                 || fog.start() >= fog.end()) return false;
@@ -55,7 +55,7 @@ final class LightMaskRenderer {
         return distanceSquared >= (double) cutoff * cutoff;
     }
 
-    static void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, LightMaskShader program,
+    void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, LightMaskShader program,
                      LongArrayList visibleGroups,
                      Long2ObjectOpenHashMap<VertexBuffer> buffers,
                      Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
@@ -126,7 +126,7 @@ final class LightMaskRenderer {
         }
     }
 
-    private static boolean prepareDraws(Vec3 cameraPos, LongArrayList visibleGroups,
+    private boolean prepareDraws(Vec3 cameraPos, LongArrayList visibleGroups,
                                      Long2ObjectOpenHashMap<VertexBuffer> buffers,
                                      Long2ObjectOpenHashMap<LightMaskMeshCache.Transition> transitions) {
         if (drawBuffers.length < visibleGroups.size()) {
@@ -155,7 +155,7 @@ final class LightMaskRenderer {
         return gpuTransitions;
     }
 
-    private static void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, Uniform blendVertexColors,
+    private void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, Uniform blendVertexColors,
                                            int count, boolean colorPass) {
         int uploadedMode = -1;
         float uploadedWeight = Float.NaN;

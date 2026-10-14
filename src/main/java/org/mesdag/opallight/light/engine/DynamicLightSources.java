@@ -22,22 +22,26 @@ import org.mesdag.opallight.light.data.LightDataLoader;
 final class DynamicLightSources {
     private static final EquipmentSlot[] EQUIPMENT_SLOTS = EquipmentSlot.values();
     // 客户端线程逐刻复用；传播器只在发生变化时复制结果。
-    private static final Long2ObjectOpenHashMap<LightSource> current = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<LightSource> current = new Long2ObjectOpenHashMap<>();
 
-    private DynamicLightSources() {}
+    private final LightPropagator propagator;
 
-    static int update(ClientLevel level) {
+    DynamicLightSources(LightPropagator propagator) {
+        this.propagator = propagator;
+    }
+
+    int update(ClientLevel level) {
         current.clear();
         Player localPlayer = Minecraft.getInstance().player;
-        if (localPlayer != null) collect(level, localPlayer, current);
+        if (localPlayer != null && localPlayer.level() == level) collect(level, localPlayer, current);
         for (Entity entity : level.entitiesForRendering()) {
             if (entity != localPlayer) collect(level, entity, current);
         }
         DynamicLights.collect(level, current);
-        return LightPropagator.replaceDynamicSources(current);
+        return propagator.replaceDynamicSources(current);
     }
 
-    static void collect(Level level, Entity entity, Long2ObjectOpenHashMap<LightSource> sources) {
+    void collect(Level level, Entity entity, Long2ObjectOpenHashMap<LightSource> sources) {
         if (entity.isRemoved() || entity.isSpectator()) return;
         boolean living = entity instanceof LivingEntity;
         double height = living ? entity.getEyeY() - 0.3
@@ -68,19 +72,19 @@ final class DynamicLightSources {
         return (long) entityId << 32 | Integer.toUnsignedLong(slot);
     }
 
-    private static void addItem(Level level, Entity entity, int slot, BlockPos pos, ItemStack stack, Long2ObjectOpenHashMap<LightSource> sources) {
+    private void addItem(Level level, Entity entity, int slot, BlockPos pos, ItemStack stack, Long2ObjectOpenHashMap<LightSource> sources) {
         var light = LightSourceDefinitions.itemWithEmissive(level, pos, stack, entity, entity.isOnFire());
-        if (light != null) sources.put(sourceKey(entity.getId(), slot), LightPropagator.reuseDynamicSource(sourceKey(entity.getId(), slot), pos.asLong(), light.left(), light.rightInt()));
+        if (light != null) sources.put(sourceKey(entity.getId(), slot), propagator.reuseDynamicSource(sourceKey(entity.getId(), slot), pos.asLong(), light.left(), light.rightInt()));
     }
 
-    private static void addBlock(Level level, Entity entity, BlockPos pos, BlockState state, Long2ObjectOpenHashMap<LightSource> sources) {
+    private void addBlock(Level level, Entity entity, BlockPos pos, BlockState state, Long2ObjectOpenHashMap<LightSource> sources) {
         var light = LightSourceDefinitions.colorWithEmissive(level, pos, state);
-        if (light != null) sources.put(sourceKey(entity.getId(), 2), LightPropagator.reuseDynamicSource(sourceKey(entity.getId(), 2), pos.asLong(), light.left(), light.rightInt()));
+        if (light != null) sources.put(sourceKey(entity.getId(), 2), propagator.reuseDynamicSource(sourceKey(entity.getId(), 2), pos.asLong(), light.left(), light.rightInt()));
     }
 
-    private static void addDefinition(Entity entity, int slot, BlockPos pos, DynamicLightDefinition definition, Long2ObjectOpenHashMap<LightSource> sources) {
+    private void addDefinition(Entity entity, int slot, BlockPos pos, DynamicLightDefinition definition, Long2ObjectOpenHashMap<LightSource> sources) {
         if (definition == null || definition.lightLevel() == 0) return;
-        sources.put(sourceKey(entity.getId(), slot), LightPropagator.reuseDynamicSource(sourceKey(entity.getId(), slot), pos.asLong(),
+        sources.put(sourceKey(entity.getId(), slot), propagator.reuseDynamicSource(sourceKey(entity.getId(), slot), pos.asLong(),
                 LightSourceDefinitions.profile(definition), definition.lightLevel()));
     }
 }

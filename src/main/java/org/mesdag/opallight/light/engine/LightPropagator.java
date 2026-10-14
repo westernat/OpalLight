@@ -27,17 +27,24 @@ import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 
 public final class LightPropagator {
-    private static final Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>>> sourcesByChunk = new Long2ObjectOpenHashMap<>();
-    private static final Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> cyclingStaticSources = new Long2ObjectOpenHashMap<>();
-    private static final Long2ObjectOpenHashMap<LongOpenHashSet> emittersByChunk = new Long2ObjectOpenHashMap<>();
-    private static final Long2ObjectOpenHashMap<LightSource> dynamicSources = new Long2ObjectOpenHashMap<>();
-    private static final Long2IntOpenHashMap changedDynamicRanges = new Long2IntOpenHashMap();
-    private static final Long2ObjectOpenHashMap<List<LightSource>> dynamicByChunk = new Long2ObjectOpenHashMap<>();
-    private static final LongOpenHashSet pendingChunks = new LongOpenHashSet();
-    private static final LongOpenHashSet dynamicPendingChunks = new LongOpenHashSet();
+    private final LightColorCache colors;
+    private final DynamicLightSources collector = new DynamicLightSources(this);
+
+    public LightPropagator(LightColorCache colors) {
+        this.colors = colors;
+    }
+
+    private final Long2ObjectOpenHashMap<Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>>> sourcesByChunk = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<ObjectIntPair<LightProfile>> cyclingStaticSources = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<LongOpenHashSet> emittersByChunk = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<LightSource> dynamicSources = new Long2ObjectOpenHashMap<>();
+    private final Long2IntOpenHashMap changedDynamicRanges = new Long2IntOpenHashMap();
+    private final Long2ObjectOpenHashMap<List<LightSource>> dynamicByChunk = new Long2ObjectOpenHashMap<>();
+    private final LongOpenHashSet pendingChunks = new LongOpenHashSet();
+    private final LongOpenHashSet dynamicPendingChunks = new LongOpenHashSet();
     // 仅局部更新保存高度分段；缺少条目表示整根区块柱需要重算。
-    private static final Long2ObjectOpenHashMap<LongOpenHashSet> pendingSections = new Long2ObjectOpenHashMap<>();
-    private static final Long2LongOpenHashMap chunkVersions = new Long2LongOpenHashMap();
+    private final Long2ObjectOpenHashMap<LongOpenHashSet> pendingSections = new Long2ObjectOpenHashMap<>();
+    private final Long2LongOpenHashMap chunkVersions = new Long2LongOpenHashMap();
     private static final ExecutorService propagationWorker = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "OpalLight propagation");
         thread.setDaemon(true);
@@ -49,19 +56,19 @@ public final class LightPropagator {
         return thread;
     });
     private static final int ASYNC_BATCH_CHUNKS = 64;
-    private static ActiveBatch activeBatch;
-    private static boolean dynamicInvalidation;
-    private static long lastCycleTick = Long.MIN_VALUE;
+    private ActiveBatch activeBatch;
+    private boolean dynamicInvalidation;
+    private long lastCycleTick = Long.MIN_VALUE;
 
-    public static int updateDynamicSources(ClientLevel level) {
-        return DynamicLightSources.update(level);
+    public int updateDynamicSources(ClientLevel level) {
+        return collector.update(level);
     }
 
     public static void clearDefinitions() {
         LightSourceDefinitions.clear();
     }
 
-    public static boolean isNearAffectedSection(long sectionPos) {
+    public boolean isNearAffectedSection(long sectionPos) {
         int sx = SectionPos.x(sectionPos), sy = SectionPos.y(sectionPos), sz = SectionPos.z(sectionPos);
         if (activeBatch != null || !pendingChunks.isEmpty()) {
             for (int dx = -1; dx <= 1; dx++) {
@@ -75,15 +82,14 @@ public final class LightPropagator {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -1; dz <= 1; dz++) {
-                    if (LightColorCache.INSTANCE.hasSection(SectionPos.asLong(sx + dx, sy + dy, sz + dz))) return true;
+                    if (colors.hasSection(SectionPos.asLong(sx + dx, sy + dy, sz + dz))) return true;
                 }
             }
         }
         return false;
     }
 
-    public static void clearAllSources() {
-        DynamicLights.clear();
+    public void clearAllSources() {
         dynamicInvalidation = false;
         if (activeBatch != null) activeBatch.snapshot().cancel();
         sourcesByChunk.clear();
@@ -100,7 +106,7 @@ public final class LightPropagator {
         lastCycleTick = Long.MIN_VALUE;
     }
 
-    public static void indexChunk(Level level, ChunkPos cp) {
+    public void indexChunk(Level level, ChunkPos cp) {
         long chunkKey = ChunkPos.asLong(cp.x, cp.z);
         removeCyclingChunk(chunkKey);
         var chunk = level.getChunkSource().getChunkForLighting(cp.x, cp.z);
@@ -123,14 +129,14 @@ public final class LightPropagator {
         }
     }
 
-    public static void forgetChunk(ChunkPos cp) {
+    public void forgetChunk(ChunkPos cp) {
         long chunkKey = ChunkPos.asLong(cp.x, cp.z);
         removeCyclingChunk(chunkKey);
         sourcesByChunk.remove(chunkKey);
         emittersByChunk.remove(chunkKey);
     }
 
-    public static boolean updateSource(Level level, BlockPos pos, BlockState state) {
+    public boolean updateSource(Level level, BlockPos pos, BlockState state) {
         long chunkKey = ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4);
         if (state.getLightEmission(level, pos) > 0) {
             emittersByChunk.computeIfAbsent(chunkKey, unused -> new LongOpenHashSet()).add(pos.asLong());
@@ -157,7 +163,7 @@ public final class LightPropagator {
                 : current == null || previous.rightInt() != current.rightInt() || !previous.left().equals(current.left());
     }
 
-    public static void scheduleCyclingSources(Level level) {
+    public void scheduleCyclingSources(Level level) {
         long gameTime = level.getGameTime();
         if (gameTime == lastCycleTick) return;
         lastCycleTick = gameTime;
@@ -178,11 +184,11 @@ public final class LightPropagator {
         }
     }
 
-    public static void scheduleAround(BlockPos pos) {
+    public void scheduleAround(BlockPos pos) {
         scheduleAround(pos, 15, false);
     }
 
-    public static void scheduleChunkAndNeighbors(int cx, int cz) {
+    public void scheduleChunkAndNeighbors(int cx, int cz) {
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 scheduleChunk(cx + dx, cz + dz);
@@ -190,7 +196,7 @@ public final class LightPropagator {
         }
     }
 
-    public static int refreshDefinitions(Level level) {
+    public int refreshDefinitions(Level level) {
         int changed = 0;
         LongOpenHashSet indexedChunks = new LongOpenHashSet();
         for (var chunkEntry : emittersByChunk.long2ObjectEntrySet()) {
@@ -236,12 +242,12 @@ public final class LightPropagator {
         return changed;
     }
 
-    public static boolean hasPendingUpdates() {
+    public boolean hasPendingUpdates() {
         return !pendingChunks.isEmpty() || activeBatch != null;
     }
 
     // 动态光源按实体和光源槽跟踪；一次替换同时标记旧位置和新位置，避免移动残影。
-    static int replaceDynamicSources(Long2ObjectMap<LightSource> current) {
+    int replaceDynamicSources(Long2ObjectMap<LightSource> current) {
         int changed = 0;
         Long2IntOpenHashMap changedRanges = changedDynamicRanges;
         changedRanges.clear();
@@ -283,14 +289,14 @@ public final class LightPropagator {
         return changed;
     }
 
-    static LightSource reuseDynamicSource(long key, long pos, LightProfile profile, int emission) {
+    LightSource reuseDynamicSource(long key, long pos, LightProfile profile, int emission) {
         LightSource previous = dynamicSources.get(key);
         return previous != null && previous.pos() == pos && previous.emission() == emission && previous.profile().equals(profile)
                 ? previous : new LightSource(pos, profile, emission);
     }
 
     // 一次采集中的旧、新范围先合并，再逐区块入队。
-    private static void scheduleDynamicRanges(Long2IntOpenHashMap ranges) {
+    private void scheduleDynamicRanges(Long2IntOpenHashMap ranges) {
         Long2ObjectOpenHashMap<LongOpenHashSet> affected = new Long2ObjectOpenHashMap<>();
         for (var entry : ranges.long2IntEntrySet()) {
             long pos = entry.getLongKey();
@@ -318,13 +324,13 @@ public final class LightPropagator {
         }
     }
 
-    public static boolean consumeDynamicInvalidation() {
+    public boolean consumeDynamicInvalidation() {
         boolean invalidated = dynamicInvalidation;
         dynamicInvalidation = false;
         return invalidated;
     }
 
-    public static boolean isGroupPropagationPending(long groupKey) {
+    public boolean isGroupPropagationPending(long groupKey) {
         if (pendingChunks.isEmpty() && activeBatch == null) return false;
         int sx = SectionPos.x(groupKey) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
         int sz = SectionPos.z(groupKey) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
@@ -338,12 +344,12 @@ public final class LightPropagator {
         return false;
     }
 
-    public static @Nullable Commit flushPending(Level level, boolean firstMeshPending,
+    public @Nullable Commit flushPending(Level level, boolean firstMeshPending,
                                                 Supplier<OptionalLong> preferredGroup) {
         return flushPending(level, firstMeshPending, preferredGroup, true);
     }
 
-    public static @Nullable Commit flushPending(Level level, boolean firstMeshPending,
+    public @Nullable Commit flushPending(Level level, boolean firstMeshPending,
                                                 Supplier<OptionalLong> preferredGroup, boolean allowCommit) {
         Commit commit = null;
         if (activeBatch != null) {
@@ -367,7 +373,7 @@ public final class LightPropagator {
         }
         LightPropagationSnapshot snapshot;
         try {
-            snapshot = LightPropagationSnapshot.capture(level, requested, sections, sourcesByChunk, dynamicByChunk);
+            snapshot = LightPropagationSnapshot.capture(colors, level, requested, sections, sourcesByChunk, dynamicByChunk);
         } catch (RuntimeException error) {
             org.mesdag.opallight.OpalLight.LOGGER.error("Failed to snapshot colored light propagation", error);
             pendingChunks.addAll(requested);
@@ -385,19 +391,19 @@ public final class LightPropagator {
         return commit;
     }
 
-    private static void removeCyclingChunk(long chunkKey) {
+    private void removeCyclingChunk(long chunkKey) {
         var old = sourcesByChunk.get(chunkKey);
         if (old == null) return;
         for (long pos : old.keySet()) cyclingStaticSources.remove(pos);
     }
 
-    private static void prioritizeDynamicPropagation() {
+    private void prioritizeDynamicPropagation() {
         ActiveBatch previous = activeBatch;
         if (previous == null || !dynamicInvalidation && (previous.dynamic() || previous.future().isDone())) return;
         requeueActiveBatch();
     }
 
-    private static void requeueActiveBatch() {
+    private void requeueActiveBatch() {
         ActiveBatch previous = activeBatch;
         if (previous == null) return;
         // 失效时整批重新入队，避免只发布同一次变化的一部分区域。
@@ -416,7 +422,7 @@ public final class LightPropagator {
         activeBatch = null;
     }
 
-    private static void scheduleAround(BlockPos pos, int emission, boolean dynamic) {
+    private void scheduleAround(BlockPos pos, int emission, boolean dynamic) {
         int cx = SectionPos.blockToSectionCoord(pos.getX());
         int cz = SectionPos.blockToSectionCoord(pos.getZ());
         for (int dx = -1; dx <= 1; dx++) {
@@ -437,15 +443,15 @@ public final class LightPropagator {
         }
     }
 
-    private static void scheduleChunk(int cx, int cz) {
+    private void scheduleChunk(int cx, int cz) {
         scheduleChunk(cx, cz, null);
     }
 
-    private static void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections) {
+    private void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections) {
         scheduleChunk(cx, cz, sections, false);
     }
 
-    private static void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections, boolean dynamic) {
+    private void scheduleChunk(int cx, int cz, @Nullable LongOpenHashSet sections, boolean dynamic) {
         long key = ChunkPos.asLong(cx, cz);
         boolean added = pendingChunks.add(key);
         boolean activeTarget = activeBatch != null && activeBatch.versions().containsKey(key);
@@ -489,11 +495,11 @@ public final class LightPropagator {
         }
     }
 
-    private static boolean sameSource(ObjectIntPair<LightProfile> previous, ObjectIntPair<LightProfile> current) {
+    private boolean sameSource(ObjectIntPair<LightProfile> previous, ObjectIntPair<LightProfile> current) {
         return previous == null ? current == null : current != null && previous.rightInt() == current.rightInt() && previous.left().equals(current.left());
     }
 
-    private static Long2LongOpenHashMap takeBatch(Level level, boolean firstMeshPending, OptionalLong preferredGroup) {
+    private Long2LongOpenHashMap takeBatch(Level level, boolean firstMeshPending, OptionalLong preferredGroup) {
         Long2LongOpenHashMap versions = new Long2LongOpenHashMap();
         int centerX = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockX() >> 4;
         int centerZ = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockZ() >> 4;
@@ -536,7 +542,7 @@ public final class LightPropagator {
         return versions;
     }
 
-    private static LongArrayList prioritizeLoadedNeighborhood(LongArrayList nearest) {
+    private LongArrayList prioritizeLoadedNeighborhood(LongArrayList nearest) {
         LongArrayList ordered = new LongArrayList(nearest.size());
         BitSet frontier = new BitSet(nearest.size());
         for (int i = 0; i < nearest.size(); i++) {
@@ -561,7 +567,7 @@ public final class LightPropagator {
         return ordered;
     }
 
-    private static @Nullable Commit commitAsync(Level level, ActiveBatch finished) {
+    private @Nullable Commit commitAsync(Level level, ActiveBatch finished) {
         LongOpenHashSet valid = new LongOpenHashSet();
         for (var entry : finished.versions().long2LongEntrySet()) {
             long key = entry.getLongKey();
