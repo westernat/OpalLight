@@ -15,6 +15,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
+import org.mesdag.opallight.OpalLight;
 import org.mesdag.opallight.light.data.LightProfile;
 
 import java.util.ArrayList;
@@ -375,7 +376,7 @@ public final class LightPropagator {
         try {
             snapshot = LightPropagationSnapshot.capture(colors, level, requested, sections, sourcesByChunk, dynamicByChunk);
         } catch (RuntimeException error) {
-            org.mesdag.opallight.OpalLight.LOGGER.error("Failed to snapshot colored light propagation", error);
+            OpalLight.LOGGER.error("Failed to snapshot colored light propagation", error);
             pendingChunks.addAll(requested);
             if (dynamicBatch) dynamicPendingChunks.addAll(requested);
             pendingSections.putAll(sections);
@@ -581,7 +582,7 @@ public final class LightPropagator {
         try {
             result = finished.future().join();
         } catch (RuntimeException error) {
-            org.mesdag.opallight.OpalLight.LOGGER.warn("Async colored light propagation failed; rebuilding on client thread", error);
+            OpalLight.LOGGER.warn("Async colored light propagation failed; rebuilding on client thread", error);
             result = finished.snapshot().computeLive(level);
         }
         if (result.unsupported()) {

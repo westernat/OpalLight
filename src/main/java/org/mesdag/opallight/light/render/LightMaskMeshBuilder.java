@@ -25,12 +25,15 @@ import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
+import org.lwjgl.system.MemoryUtil;
 import org.mesdag.opallight.light.engine.LightColorCache;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
@@ -151,7 +154,7 @@ final class LightMaskMeshBuilder {
         for (var entry : current.long2ObjectEntrySet()) {
             BlockMesh old = previous.get(entry.getLongKey());
             if (old == null || old.vertexOffset() != entry.getValue().vertexOffset()
-                || !java.util.Arrays.equals(old.vertices(), entry.getValue().vertices())) return false;
+                || !Arrays.equals(old.vertices(), entry.getValue().vertices())) return false;
         }
         return true;
     }
@@ -315,7 +318,7 @@ final class LightMaskMeshBuilder {
             }
         }
         return encoded.position() == 0 ? EMPTY_VERTICES
-                : java.util.Arrays.copyOf(encoded.array(), encoded.position());
+                : Arrays.copyOf(encoded.array(), encoded.position());
     }
 
     // 采样范围必须包含模型偏移与越界顶点。
@@ -348,14 +351,14 @@ final class LightMaskMeshBuilder {
     }
 
     private static int appendVertices(ByteBufferBuilder memory, byte[] vertices) {
-        org.lwjgl.system.MemoryUtil.memByteBuffer(memory.reserve(vertices.length), vertices.length).put(vertices);
+        MemoryUtil.memByteBuffer(memory.reserve(vertices.length), vertices.length).put(vertices);
         return vertices.length / OUTPUT_VERTEX_BYTES;
     }
 
     private static @Nullable MeshData finishMesh(ByteBufferBuilder memory, int vertexCount) {
         if (vertexCount == 0) return null;
         var mode = VertexFormat.Mode.QUADS;
-        return new MeshData(java.util.Objects.requireNonNull(memory.build()), new MeshData.DrawState(
+        return new MeshData(Objects.requireNonNull(memory.build()), new MeshData.DrawState(
                 VERTEX_FORMAT, vertexCount, mode.indexCount(vertexCount), mode,
                 VertexFormat.IndexType.least(vertexCount)));
     }

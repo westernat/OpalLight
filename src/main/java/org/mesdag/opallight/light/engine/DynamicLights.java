@@ -16,6 +16,7 @@ import org.mesdag.opallight.light.data.LightProfile;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -174,7 +175,7 @@ public final class DynamicLights {
     private static final class Registration implements Sink {
         private final ResourceLocation id;
         private final Collector collector;
-        private final Map<ClientLevel, Registration> worlds = new java.util.IdentityHashMap<>();
+        private final Map<ClientLevel, Registration> worlds = new IdentityHashMap<>();
         private final Map<Identity, Tracked> tracked = new HashMap<>();
         private final Map<Identity, LightSource> pending = new HashMap<>();
         private final Map<Long, Line> lines = new HashMap<>();

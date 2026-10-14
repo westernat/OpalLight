@@ -8,6 +8,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientReloadListenersEvent;
 import net.neoforged.neoforge.client.event.RegisterShadersEvent;
@@ -111,7 +112,7 @@ public final class LightManager {
     }
 
     @SubscribeEvent
-    public static void loggingOut(net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+    public static void loggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         LightWorld.clear();
         previousShaderPackMode = null;
     }
