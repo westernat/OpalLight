@@ -300,8 +300,9 @@ public final class LightMaskMeshCache {
     void draw(Matrix4f viewMatrix, Matrix4f projectionMatrix, Camera camera, LightMaskShader shader,
                      boolean reloadInProgress, LongPredicate propagationPending) {
         Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || level == null || minecraft.level != level || minecraft.levelRenderer == null) return;
         Frustum frustum = minecraft.levelRenderer.getFrustum();
-        if (level == null) return;
+        if (frustum == null) return;
         processAsync(level, frustum, !reloadInProgress, propagationPending);
         if (reloadTransaction != null && !reloadInProgress && !hasVisiblePending(frustum)) commitDefinitionReload();
         expireTransitions();
@@ -368,7 +369,10 @@ public final class LightMaskMeshCache {
 
     OptionalLong firstVisiblePropagationGroup(ClientLevel level, LongPredicate propagationPending) {
         var minecraft = Minecraft.getInstance();
+        if (minecraft == null || level == null || minecraft.level != level || minecraft.levelRenderer == null)
+            return OptionalLong.empty();
         var frustum = minecraft.levelRenderer.getFrustum();
+        if (frustum == null) return OptionalLong.empty();
         Vec3 camera = minecraft.gameRenderer.getMainCamera().getPosition();
         double nearest = Double.POSITIVE_INFINITY;
         OptionalLong selected = OptionalLong.empty();
