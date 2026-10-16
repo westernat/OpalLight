@@ -85,14 +85,7 @@ final class LightMaskRenderer {
             TerrainFog fog = terrainFog;
             if (fog != null) {
                 // 原版后续渲染阶段可能改写全局雾状态，遮罩始终使用地形雾。
-                lightMaskShader.FOG_START.set(fog.start());
-                lightMaskShader.FOG_END.set(fog.end());
-                lightMaskShader.FOG_COLOR.set(fog.red(), fog.green(), fog.blue(), fog.alpha());
-                lightMaskShader.FOG_SHAPE.set(fog.shape().getIndex());
-                lightMaskShader.FOG_START.upload();
-                lightMaskShader.FOG_END.upload();
-                lightMaskShader.FOG_COLOR.upload();
-                lightMaskShader.FOG_SHAPE.upload();
+                program.applyFog(fog.start(), fog.end(), fog.red(), fog.green(), fog.blue(), fog.alpha(), fog.shape().getIndex());
             }
             Uniform groupOffset = program.groupOffset;
             Uniform transitionWeight = program.transitionWeight;
