@@ -92,17 +92,13 @@ final class LightMaskRenderer {
             GlStateManager._polygonOffset(-1.0F, -1.0F);
             GlStateManager._enablePolygonOffset();
             GlStateManager._enableDepthTest();
-            GlStateManager._disableBlend();
-            GlStateManager._depthMask(true);
-            GlStateManager._depthFunc(GL11.GL_LEQUAL);
-            GlStateManager._colorMask(false, false, false, false);
-            drawVisibleBuffers(groupOffset, transitionWeight, program.blendVertexColors, visibleGroups.size(), false);
-            GlStateManager._colorMask(true, true, true, true);
+            // 只读取完整场景的深度，不能用彩光网格重建遮挡。
             GlStateManager._depthMask(false);
-            GlStateManager._depthFunc(GL11.GL_EQUAL);
+            GlStateManager._depthFunc(GL11.GL_LEQUAL);
+            GlStateManager._colorMask(true, true, true, true);
             GlStateManager._enableBlend();
             GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
-            drawVisibleBuffers(groupOffset, transitionWeight, program.blendVertexColors, visibleGroups.size(), true);
+            drawVisibleBuffers(groupOffset, transitionWeight, program.blendVertexColors, visibleGroups.size());
         } finally {
             if (gpuTransitions) {
                 GL11.glBindTexture(GL31.GL_TEXTURE_BUFFER, previousColorBinding);
@@ -154,11 +150,11 @@ final class LightMaskRenderer {
     }
 
     private void drawVisibleBuffers(Uniform groupOffset, Uniform transitionWeight, Uniform blendVertexColors,
-                                           int count, boolean colorPass) {
+                                    int count) {
         int uploadedMode = -1;
         float uploadedWeight = Float.NaN;
         for (int i = 0; i < count; i++) {
-            int mode = colorPass && previousColors[i] != 0 ? 1 : 0;
+            int mode = previousColors[i] != 0 ? 1 : 0;
             if (mode != uploadedMode) {
                 blendVertexColors.set(mode);
                 blendVertexColors.upload();
@@ -170,22 +166,18 @@ final class LightMaskRenderer {
             groupOffset.set(drawOffsets[i * 3], drawOffsets[i * 3 + 1], drawOffsets[i * 3 + 2]);
             groupOffset.upload();
             if (previousBuffers[i] != null && previousColors[i] == 0) {
-                if (colorPass) {
-                    float weight = 1.0F - transitionWeights[i];
-                    transitionWeight.set(weight);
-                    transitionWeight.upload();
-                    uploadedWeight = weight;
-                }
+                float weight = 1.0F - transitionWeights[i];
+                transitionWeight.set(weight);
+                transitionWeight.upload();
+                uploadedWeight = weight;
                 previousBuffers[i].bind();
                 previousBuffers[i].draw();
             }
-            if (colorPass) {
-                float weight = transitionWeights[i];
-                if (uploadedWeight != weight) {
-                    transitionWeight.set(weight);
-                    transitionWeight.upload();
-                    uploadedWeight = weight;
-                }
+            float weight = transitionWeights[i];
+            if (uploadedWeight != weight) {
+                transitionWeight.set(weight);
+                transitionWeight.upload();
+                uploadedWeight = weight;
             }
             VertexBuffer buffer = drawBuffers[i];
             buffer.bind();
