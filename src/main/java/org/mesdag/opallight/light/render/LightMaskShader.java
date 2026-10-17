@@ -1,9 +1,12 @@
 package org.mesdag.opallight.light.render;
 
 import com.mojang.blaze3d.shaders.Uniform;
+import com.mojang.blaze3d.platform.GlStateManager;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL30;
 
 final class LightMaskShader {
     final ShaderInstance shader;
@@ -25,7 +28,12 @@ final class LightMaskShader {
         shader.MODEL_VIEW_MATRIX.set(view);
         // 使用渲染事件中的投影快照，避免光影包的合成阶段改写全局矩阵。
         shader.PROJECTION_MATRIX.set(projection);
+        int framebuffer = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+        int readFramebuffer = GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);
         shader.apply();
+        // 自定义 shader 的应用过程可能切换目标，遮罩必须沿用场景的深度附件。
+        GlStateManager._glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, framebuffer);
+        GlStateManager._glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, readFramebuffer);
     }
 
     void applyFog(float start, float end, float red, float green, float blue, float alpha, int shape) {
