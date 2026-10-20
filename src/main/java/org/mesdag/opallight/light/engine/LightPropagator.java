@@ -56,7 +56,6 @@ public final class LightPropagator {
         thread.setDaemon(true);
         return thread;
     });
-    private static final int ASYNC_BATCH_CHUNKS = 64;
     private ActiveBatch activeBatch;
     private boolean dynamicInvalidation;
     private long lastCycleTick = Long.MIN_VALUE;
@@ -345,12 +344,12 @@ public final class LightPropagator {
         return false;
     }
 
-    public @Nullable Commit flushPending(Level level, boolean firstMeshPending,
+    public @Nullable Commit flushPending(Level level,
                                                 Supplier<OptionalLong> preferredGroup) {
-        return flushPending(level, firstMeshPending, preferredGroup, true);
+        return flushPending(level, preferredGroup, true);
     }
 
-    public @Nullable Commit flushPending(Level level, boolean firstMeshPending,
+    public @Nullable Commit flushPending(Level level,
                                                 Supplier<OptionalLong> preferredGroup, boolean allowCommit) {
         Commit commit = null;
         if (activeBatch != null) {
@@ -363,8 +362,8 @@ public final class LightPropagator {
         if (commit != null) return commit;
         if (pendingChunks.isEmpty()) return commit;
         boolean dynamicBatch = !dynamicPendingChunks.isEmpty();
-        Long2LongOpenHashMap versions = takeBatch(level, firstMeshPending,
-                firstMeshPending && !dynamicBatch ? preferredGroup.get() : OptionalLong.empty());
+        Long2LongOpenHashMap versions = takeBatch(level,
+                !dynamicBatch ? preferredGroup.get() : OptionalLong.empty());
         if (versions.isEmpty()) return commit;
         LongOpenHashSet requested = new LongOpenHashSet(versions.keySet());
         Long2ObjectOpenHashMap<LongOpenHashSet> sections = new Long2ObjectOpenHashMap<>();
@@ -500,31 +499,23 @@ public final class LightPropagator {
         return previous == null ? current == null : current != null && previous.rightInt() == current.rightInt() && previous.left().equals(current.left());
     }
 
-    private Long2LongOpenHashMap takeBatch(Level level, boolean firstMeshPending, OptionalLong preferredGroup) {
+    private Long2LongOpenHashMap takeBatch(Level level, OptionalLong preferredGroup) {
         Long2LongOpenHashMap versions = new Long2LongOpenHashMap();
         int centerX = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockX() >> 4;
         int centerZ = Minecraft.getInstance().player == null ? 0 : Minecraft.getInstance().player.getBlockZ() >> 4;
         boolean dynamicBatch = !dynamicPendingChunks.isEmpty();
         // 动态光仅排序自己的待处理区块，避免在世界加载期间反复排序静态积压任务。
         LongArrayList nearest = new LongArrayList(dynamicBatch ? dynamicPendingChunks : pendingChunks);
-        if (dynamicBatch) firstMeshPending = false;
         nearest.sort((a, b) -> {
             long ax = (long) ChunkPos.getX(a) - centerX, az = (long) ChunkPos.getZ(a) - centerZ;
             long bx = (long) ChunkPos.getX(b) - centerX, bz = (long) ChunkPos.getZ(b) - centerZ;
             return Long.compare(ax * ax + az * az, bx * bx + bz * bz);
         });
         nearest = prioritizeLoadedNeighborhood(nearest);
-        // 已有颜色结果时优先补齐可见实体分段，避免继续处理近处空中区块。
-        OptionalLong preferred = firstMeshPending ? preferredGroup : OptionalLong.empty();
-        boolean anchored = preferred.isPresent();
-        int groupX = anchored ? SectionPos.x(preferred.getAsLong()) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT : 0;
-        int groupZ = anchored ? SectionPos.z(preferred.getAsLong()) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT : 0;
-        int groupSize = 1 << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
-        for (int i = 0; i < nearest.size() && (dynamicBatch || versions.size() < ASYNC_BATCH_CHUNKS); i++) {
+        if (!dynamicBatch) nearest = staticNeighborhood(nearest, preferredGroup);
+        for (int i = 0; i < nearest.size(); i++) {
             long key = nearest.getLong(i);
             int cx = ChunkPos.getX(key), cz = ChunkPos.getZ(key);
-            if (firstMeshPending && anchored && (cx < groupX - 1 || cx > groupX + groupSize
-                    || cz < groupZ - 1 || cz > groupZ + groupSize)) continue;
             pendingChunks.remove(key);
             dynamicPendingChunks.remove(key);
             if (level.getChunkSource().getChunkForLighting(cx, cz) == null) {
@@ -532,15 +523,27 @@ public final class LightPropagator {
                 pendingSections.remove(key);
                 continue;
             }
-            if (firstMeshPending && !anchored) {
-                // 首屏优先完成最近网格及其采样边界，范围与网格的传播等待条件一致。
-                groupX = (cx >> LightMeshLayout.GROUP_XZ_SECTION_SHIFT) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
-                groupZ = (cz >> LightMeshLayout.GROUP_XZ_SECTION_SHIFT) << LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
-                anchored = true;
-            }
             versions.put(key, chunkVersions.get(key));
         }
         return versions;
+    }
+
+    static LongArrayList staticNeighborhood(LongArrayList nearest, OptionalLong preferred) {
+        if (nearest.isEmpty()) return nearest;
+        int shift = LightMeshLayout.GROUP_XZ_SECTION_SHIFT;
+        long anchor = preferred.isPresent() ? preferred.getAsLong()
+                : SectionPos.asLong(ChunkPos.getX(nearest.getLong(0)) >> shift, 0,
+                    ChunkPos.getZ(nearest.getLong(0)) >> shift);
+        int x = SectionPos.x(anchor) << shift, z = SectionPos.z(anchor) << shift;
+        int size = 1 << shift;
+        var selected = new LongArrayList();
+        // 每批补齐一个网格及采样邻区，避免已完成区域等待远处大量光源。
+        for (long key : nearest) {
+            int cx = ChunkPos.getX(key), cz = ChunkPos.getZ(key);
+            if (cx >= x - 1 && cx <= x + size && cz >= z - 1 && cz <= z + size) selected.add(key);
+        }
+        return selected.isEmpty() && preferred.isPresent()
+                ? staticNeighborhood(nearest, OptionalLong.empty()) : selected;
     }
 
     private LongArrayList prioritizeLoadedNeighborhood(LongArrayList nearest) {

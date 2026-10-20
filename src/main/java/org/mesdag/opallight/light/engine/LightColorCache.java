@@ -14,6 +14,7 @@ import org.jetbrains.annotations.Nullable;
 import org.mesdag.opallight.light.color.LightColorData;
 import org.mesdag.opallight.light.color.LightColorSampler;
 
+import java.util.BitSet;
 import java.util.function.LongConsumer;
 
 public final class LightColorCache {
@@ -88,16 +89,25 @@ public final class LightColorCache {
     }
 
     public record SectionUpdate(long key, @Nullable Long2LongOpenHashMap colors,
-                         int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {}
+                                int minX, int minY, int minZ, int maxX, int maxY, int maxZ,
+                                @Nullable BitSet changedPositions) {
+        public SectionUpdate(long key, @Nullable Long2LongOpenHashMap colors,
+                             int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+            this(key, colors, minX, minY, minZ, maxX, maxY, maxZ, null);
+        }
+    }
 
     static @Nullable SectionUpdate difference(long key, @Nullable Long2LongOpenHashMap old, @Nullable Long2LongOpenHashMap updated) {
         if (old == updated) return null;
+        BitSet changed = null;
         int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
         int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
         if (old != null) {
             for (var entry : old.long2LongEntrySet()) {
                 long pos = entry.getLongKey();
                 if (updated != null && updated.getOrDefault(pos, -1L) == entry.getLongValue()) continue;
+                if (changed == null) changed = new BitSet(4096);
+                changed.set((BlockPos.getX(pos) & 15) | (BlockPos.getZ(pos) & 15) << 4 | (BlockPos.getY(pos) & 15) << 8);
                 minX = Math.min(minX, BlockPos.getX(pos)); maxX = Math.max(maxX, BlockPos.getX(pos));
                 minY = Math.min(minY, BlockPos.getY(pos)); maxY = Math.max(maxY, BlockPos.getY(pos));
                 minZ = Math.min(minZ, BlockPos.getZ(pos)); maxZ = Math.max(maxZ, BlockPos.getZ(pos));
@@ -106,13 +116,15 @@ public final class LightColorCache {
         if (updated != null) {
             for (long pos : updated.keySet()) {
                 if (old != null && old.containsKey(pos)) continue;
+                if (changed == null) changed = new BitSet(4096);
+                changed.set((BlockPos.getX(pos) & 15) | (BlockPos.getZ(pos) & 15) << 4 | (BlockPos.getY(pos) & 15) << 8);
                 minX = Math.min(minX, BlockPos.getX(pos)); maxX = Math.max(maxX, BlockPos.getX(pos));
                 minY = Math.min(minY, BlockPos.getY(pos)); maxY = Math.max(maxY, BlockPos.getY(pos));
                 minZ = Math.min(minZ, BlockPos.getZ(pos)); maxZ = Math.max(maxZ, BlockPos.getZ(pos));
             }
         }
         return minX == Integer.MAX_VALUE ? null
-                : new SectionUpdate(key, updated, minX, minY, minZ, maxX, maxY, maxZ);
+                : new SectionUpdate(key, updated, minX, minY, minZ, maxX, maxY, maxZ, changed);
     }
 
     public void apply(SectionUpdate update) {

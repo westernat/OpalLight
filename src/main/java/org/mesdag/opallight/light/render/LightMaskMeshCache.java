@@ -90,10 +90,6 @@ public final class LightMaskMeshCache {
     private record MeshResult(long key, long epoch, long version, @Nullable LightMaskMeshBuilder.BuiltMesh mesh,
                               @Nullable Throwable error) {}
 
-    boolean hasMeshes() {
-        return !buffers.isEmpty();
-    }
-
     private void dirty(long key) {
         dirty(key, false);
     }
@@ -215,7 +211,16 @@ public final class LightMaskMeshCache {
     }
 
     void markColorChanged(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, boolean immediate) {
-        LightUpdateBounds changed = new LightUpdateBounds(minX, minY, minZ, maxX, maxY, maxZ);
+        markColorChanged(new LightUpdateBounds(minX, minY, minZ, maxX, maxY, maxZ), immediate);
+    }
+
+    void markColorChanged(LightColorCache.SectionUpdate update, boolean immediate) {
+        markColorChanged(LightUpdateBounds.from(update), immediate);
+    }
+
+    private void markColorChanged(LightUpdateBounds changed, boolean immediate) {
+        int minX = changed.minX(), minY = changed.minY(), minZ = changed.minZ();
+        int maxX = changed.maxX(), maxY = changed.maxY(), maxZ = changed.maxZ();
         for (int gx = (minX - 1) >> GROUP_XZ_BLOCK_SHIFT; gx <= (maxX + 1) >> GROUP_XZ_BLOCK_SHIFT; gx++) {
             for (int gy = (minY - 1) >> GROUP_Y_BLOCK_SHIFT; gy <= (maxY + 1) >> GROUP_Y_BLOCK_SHIFT; gy++) {
                 for (int gz = (minZ - 1) >> GROUP_XZ_BLOCK_SHIFT; gz <= (maxZ + 1) >> GROUP_XZ_BLOCK_SHIFT; gz++) {

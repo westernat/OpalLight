@@ -161,28 +161,26 @@ public final class LightManager {
         ClientLevel level = world.level;
         if (world.propagator().consumeDynamicInvalidation()) world.meshes().invalidateDynamicBatch();
         world.meshes().finishCompletedMeshes(level);
-        boolean firstMeshPending = !world.meshes().hasMeshes();
         Supplier<OptionalLong> preferred = () ->
                 level != Minecraft.getInstance().level ? OptionalLong.empty() : world.meshes().firstVisiblePropagationGroup(level, world.propagator()::isGroupPropagationPending);
         // 网格构建期间允许下一批传播计算，结果留待当前网格整批发布后提交。
         if (world.meshes().hasPendingDynamicBatch()) {
-            world.propagator().flushPending(level, firstMeshPending, preferred, false);
+            world.propagator().flushPending(level, preferred, false);
             return;
         }
-        var commit = world.propagator().flushPending(level, firstMeshPending, preferred);
+        var commit = world.propagator().flushPending(level, preferred);
         if (commit != null) {
             world.meshes().beginDirtyBatch(commit.dynamic());
             try {
                 for (var update : commit.updates()) {
                     world.colors().apply(update);
-                    world.meshes().markColorChanged(update.minX(), update.minY(), update.minZ(),
-                            update.maxX(), update.maxY(), update.maxZ(), commit.dynamic());
+                    world.meshes().markColorChanged(update, commit.dynamic());
                 }
             } finally {
                 world.meshes().endDirtyBatch();
             }
             // 发布完成后才允许捕获下一份传播快照。
-            world.propagator().flushPending(level, firstMeshPending, preferred, false);
+            world.propagator().flushPending(level, preferred, false);
         }
         if (!world.propagator().hasPendingUpdates()) world.meshes().resumeDynamicBatch();
         if (world.reloadInProgress) world.reloadInProgress = world.propagator().hasPendingUpdates();
