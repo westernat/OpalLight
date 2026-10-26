@@ -7,7 +7,7 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import org.mesdag.opallight.OpalLight;
 
-@EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.MOD)
+@EventBusSubscriber(modid = OpalLight.MODID, value = Dist.CLIENT)
 public final class LightIntegrations {
     private LightIntegrations() {}
 
