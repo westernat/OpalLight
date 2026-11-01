@@ -649,8 +649,9 @@ public final class LightMaskMeshCache {
         return false;
     }
 
-    public void beginDefinitionReload() {
+    public void beginResourceReload() {
         LongOpenHashSet carryDirty = new LongOpenHashSet(dirtyGroups);
+        carryDirty.addAll(buffers.keySet());
         carryDirty.addAll(inFlight.keySet());
         if (reloadTransaction != null) {
             carryDirty.addAll(reloadTransaction.keys());
@@ -658,8 +659,11 @@ public final class LightMaskMeshCache {
         }
         reloadTransaction = new LightMaskReloadTransaction();
         clearJobs();
+        /// 旧几何包含旧模型与图集坐标，不能只重新着色。
+        parts.clear();
         dirtyGroups.addAll(carryDirty);
         colorDirtyGroups.addAll(carryDirty);
+        colors.forEachSection(this::markDirtyAroundSection);
     }
 
     private void failDynamicBatch(long key) {

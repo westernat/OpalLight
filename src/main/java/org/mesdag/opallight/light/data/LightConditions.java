@@ -20,15 +20,15 @@ public final class LightConditions {
     private LightConditions() {
     }
 
-    // 工厂在配置解析时绑定；匹配阶段只调用已编译的条件。
-    public static synchronized AutoCloseable registerItem(ResourceLocation id,
+    /// 初始化时注册条件工厂；资源先于注册完成时，匹配阶段会补充绑定。
+    public static synchronized void registerItem(ResourceLocation id,
                                                           Function<JsonElement, BiPredicate<ItemStack, Entity>> factory) {
-        return register(item, id, factory);
+        register(item, id, factory);
     }
 
-    public static synchronized AutoCloseable registerEntity(ResourceLocation id,
+    public static synchronized void registerEntity(ResourceLocation id,
                                                             Function<JsonElement, BiPredicate<ItemStack, Entity>> factory) {
-        return register(entity, id, factory);
+        register(entity, id, factory);
     }
 
     static synchronized BiPredicate<ItemStack, Entity> compile(boolean forItem, ResourceLocation id, JsonElement value) {
@@ -52,22 +52,17 @@ public final class LightConditions {
                         boundRevision = revision;
                     }
                 }
-                // 未安装适配模组时条件不成立，不能意外落入常亮状态。
+                /// 未安装适配模组时条件不成立，不能意外落入常亮状态。
                 return predicate != null && predicate.test(stack, owner);
             }
         };
     }
 
-    private static AutoCloseable register(Map<ResourceLocation, Function<JsonElement, BiPredicate<ItemStack, Entity>>> registry,
+    private static void register(Map<ResourceLocation, Function<JsonElement, BiPredicate<ItemStack, Entity>>> registry,
                                           ResourceLocation id, Function<JsonElement, BiPredicate<ItemStack, Entity>> factory) {
         if (factory == null) throw new IllegalArgumentException("Condition factory is required");
         if (registry.putIfAbsent(id, factory) != null)
             throw new IllegalArgumentException("Duplicate light condition: " + id);
         revision++;
-        return () -> {
-            synchronized (LightConditions.class) {
-                if (registry.remove(id, factory)) revision++;
-            }
-        };
     }
 }

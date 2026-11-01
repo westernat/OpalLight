@@ -132,10 +132,10 @@ public final class LightManager {
         LightPropagator.clearDefinitions();
         if (!OpalLightConfig.isEnabled()) return;
         for (var world : LightWorld.all()) {
-            int changedSources = world.propagator().refreshDefinitions(world.level)
-                + world.propagator().updateDynamicSources(world.level);
-            if (changedSources == 0) continue;
-            world.meshes().beginDefinitionReload();
+            /// 资源包也可能改变模型和纹理坐标，光源定义未变时仍需重建几何。
+            world.meshes().beginResourceReload();
+            world.propagator().refreshDefinitions(world.level);
+            world.propagator().updateDynamicSources(world.level);
             world.reloadInProgress = world.propagator().hasPendingUpdates();
         }
     }

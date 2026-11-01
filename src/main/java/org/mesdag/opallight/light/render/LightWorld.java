@@ -49,11 +49,11 @@ public final class LightWorld {
         for (var world : all()) unload(world.level);
     }
 
+    /// 配置切换只重置渲染数据；外部光源句柄在世界卸载时才统一关闭。
     void reset() {
         propagator.clearAllSources();
         meshes.invalidate();
         colors.clearAll();
-        DynamicLights.clear(level);
         reloadInProgress = false;
         viewMatrix = null;
         projectionMatrix = null;
