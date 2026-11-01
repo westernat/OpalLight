@@ -33,7 +33,6 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
@@ -358,7 +357,9 @@ final class LightMaskMeshBuilder {
     private static @Nullable MeshData finishMesh(ByteBufferBuilder memory, int vertexCount) {
         if (vertexCount == 0) return null;
         var mode = VertexFormat.Mode.QUADS;
-        return new MeshData(Objects.requireNonNull(memory.build()), new MeshData.DrawState(
+        var vertices = memory.build();
+        if (vertices == null) throw new IllegalStateException("Nonempty light mesh has no vertex data");
+        return new MeshData(vertices, new MeshData.DrawState(
                 VERTEX_FORMAT, vertexCount, mode.indexCount(vertexCount), mode,
                 VertexFormat.IndexType.least(vertexCount)));
     }

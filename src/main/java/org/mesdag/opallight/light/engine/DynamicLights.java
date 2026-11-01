@@ -2,6 +2,7 @@ package org.mesdag.opallight.light.engine;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
@@ -18,12 +19,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class DynamicLights {
-    private static volatile List<Registration> collectors = List.of();
+    private static final Map<ResourceLocation, Registration> collectors = new LinkedHashMap<>();
+    private static boolean collectingStarted;
     private static final Set<Handle> handles = ConcurrentHashMap.newKeySet();
     private static long nextKey = Long.MIN_VALUE;
 
@@ -45,41 +48,40 @@ public final class DynamicLights {
 
         void entity(long id, Vec3 position, Entity entity);
 
-        void line(long id, Vec3 start, Vec3 end, OpalColor color, int lightLevel);
+        void line(long id, Vec3 start, Vec3 end, LightProfile profile, int lightLevel);
+
+        default void line(long id, Vec3 start, Vec3 end, OpalColor color, int lightLevel) {
+            line(id, start, end, new LightProfile(color, null), lightLevel);
+        }
     }
 
-    // 采集器在客户端线程执行，标识仅需在同一个采集器内保持稳定。
-    public static synchronized AutoCloseable registerCollector(ResourceLocation id, Collector collector) {
-        if (collector == null) throw new IllegalArgumentException("Light collector is required");
-        for (var registered : collectors) {
-            if (registered.id.equals(id)) throw new IllegalArgumentException("Duplicate light collector: " + id);
-        }
-        var registration = new Registration(id, collector);
-        var updated = new ArrayList<>(collectors);
-        updated.add(registration);
-        collectors = List.copyOf(updated);
-        return () -> {
-            synchronized (DynamicLights.class) {
-                var remaining = new ArrayList<>(collectors);
-                remaining.remove(registration);
-                collectors = List.copyOf(remaining);
-            }
-        };
+    /// 在客户端初始化期间注册采集器；标识只需在同一个采集器内保持稳定。
+    public static void registerCollector(ResourceLocation id, Collector collector) {
+        if (!Minecraft.getInstance().isSameThread()) throw new IllegalStateException("Light collectors must be registered on the client thread");
+        if (id == null || collector == null) throw new IllegalArgumentException("Light collector ID and collector are required");
+        if (collectingStarted) throw new IllegalStateException("Light collectors have already started collecting");
+        if (collectors.putIfAbsent(id, new Registration(id, collector)) != null) throw new IllegalArgumentException("Duplicate light collector: " + id);
     }
 
     public static Handle add(ClientLevel level, Vec3 position, OpalColor color, int lightLevel) {
-        return create(level, position, color, lightLevel, Long.MAX_VALUE);
+        return create(level, position, new LightProfile(color, null), lightLevel, Long.MAX_VALUE, 0);
     }
 
     public static Handle flash(ClientLevel level, Vec3 position, OpalColor color, int lightLevel, int durationTicks) {
-        if (durationTicks <= 0) throw new IllegalArgumentException("Light duration must be positive");
-        return create(level, position, color, lightLevel, Math.addExact(level.getGameTime(), durationTicks));
+        return flash(level, position, new LightProfile(color, null), lightLevel, durationTicks, false);
     }
 
-    private static Handle create(ClientLevel level, Vec3 position, OpalColor color, int lightLevel, long expiresAt) {
+    /// 可选线性淡出，支持循环颜色；光源随世界卸载或持续时间结束自动清理。
+    public static Handle flash(ClientLevel level, Vec3 position, LightProfile profile, int lightLevel, int durationTicks, boolean fadeOut) {
         if (level == null) throw new IllegalArgumentException("Client level is required");
-        validate(position, new LightProfile(color, null), lightLevel);
-        var handle = new Handle(new RuntimeSource(level, position, new LightProfile(color, null), lightLevel, expiresAt));
+        if (durationTicks <= 0) throw new IllegalArgumentException("Light duration must be positive");
+        return create(level, position, profile, lightLevel, Math.addExact(level.getGameTime(), durationTicks), fadeOut ? durationTicks : 0);
+    }
+
+    private static Handle create(ClientLevel level, Vec3 position, LightProfile profile, int lightLevel, long expiresAt, int fadeDuration) {
+        if (level == null) throw new IllegalArgumentException("Client level is required");
+        validate(position, profile, lightLevel);
+        var handle = new Handle(new RuntimeSource(level, position, profile, lightLevel, expiresAt, fadeDuration));
         handles.add(handle);
         return handle;
     }
@@ -98,7 +100,7 @@ public final class DynamicLights {
             validate(position, profile, lightLevel);
             var previous = source;
             if (previous == null) throw new IllegalStateException("Light handle is closed");
-            source = new RuntimeSource(previous.level, position, profile, lightLevel, previous.expiresAt);
+            source = new RuntimeSource(previous.level, position, profile, lightLevel, previous.expiresAt, previous.fadeDuration);
         }
 
         public boolean isClosed() {
@@ -113,11 +115,13 @@ public final class DynamicLights {
     }
 
     static void collect(ClientLevel level, Long2ObjectOpenHashMap<LightSource> target) {
+        collectingStarted = true;
         for (var handle : handles) {
             var source = handle.source;
             if (source == null) continue;
             if (source.level != level) continue;
-            if (level.getGameTime() >= source.expiresAt) {
+            if (level.getGameTime() >= source.expiresAt
+                    || source.fadeDuration > 0 && level.getGameTime() < source.expiresAt - source.fadeDuration) {
                 handle.close();
                 continue;
             }
@@ -126,9 +130,12 @@ public final class DynamicLights {
                 handle.key = allocateKey(target);
                 handle.assigned = true;
             }
-            target.put(handle.key, source.light());
+            int brightness = source.fadeDuration == 0 ? source.lightLevel
+                    : Math.round(source.lightLevel * (source.expiresAt - level.getGameTime()) / (float) source.fadeDuration);
+            if (brightness > 0) target.put(handle.key, source.light(brightness));
         }
-        for (var registration : collectors) registration.worlds.computeIfAbsent(level, ignored -> new Registration(registration.id, registration.collector)).collect(level, target);
+        for (var registration : collectors.values())
+            registration.worlds.computeIfAbsent(level, ignored -> new Registration(registration.id, registration.collector)).collect(level, target);
     }
 
     public static void clear(ClientLevel level) {
@@ -136,7 +143,7 @@ public final class DynamicLights {
             var source = handle.source;
             if (source != null && source.level == level) handle.close();
         }
-        for (var registration : collectors) registration.worlds.remove(level);
+        for (var registration : collectors.values()) registration.worlds.remove(level);
     }
 
     private static long allocateKey(Long2ObjectOpenHashMap<LightSource> target) {
@@ -154,9 +161,10 @@ public final class DynamicLights {
             throw new IllegalArgumentException("Light color must be between 0 and 1");
     }
 
-    private record RuntimeSource(ClientLevel level, Vec3 position, LightProfile profile, int lightLevel, long expiresAt) {
-        LightSource light() {
-            return new LightSource(BlockPos.containing(position).asLong(), profile, lightLevel);
+    private record RuntimeSource(ClientLevel level, Vec3 position, LightProfile profile, int lightLevel,
+                                 long expiresAt, int fadeDuration) {
+        LightSource light(int brightness) {
+            return new LightSource(BlockPos.containing(position).asLong(), profile, brightness);
         }
     }
 
@@ -244,9 +252,8 @@ public final class DynamicLights {
         }
 
         @Override
-        public void line(long id, Vec3 start, Vec3 end, OpalColor color, int lightLevel) {
+        public void line(long id, Vec3 start, Vec3 end, LightProfile profile, int lightLevel) {
             requireCollecting();
-            var profile = new LightProfile(color, null);
             validate(start, profile, lightLevel);
             validate(end, profile, lightLevel);
             var line = lines.get(id);

@@ -36,6 +36,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.TreeMap;
 import java.util.function.Function;
 
@@ -51,6 +53,11 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
     public static final Codec<Map<String, List<DynamicLightDefinition>>> ITEM_RULE_CODEC = ruleCodec(BuiltInRegistries.ITEM);
     public static final Codec<Map<String, List<DynamicLightDefinition>>> ENTITY_RULE_CODEC = ruleCodec(BuiltInRegistries.ENTITY_TYPE);
 
+    private static final Codec<Map<ResourceLocation, DynamicLightDefinition>> NAMED_SOURCE_CODEC =
+            Codec.unboundedMap(ResourceLocation.CODEC, DynamicLightDefinition.CODEC);
+    private static final Set<String> NAMED_SOURCE_SECTIONS = ConcurrentHashMap.newKeySet();
+
+    private Map<String, Map<ResourceLocation, NamedLightDefinition>> namedSources = Map.of();
     private final LightTagRules<Item> itemTags = new LightTagRules<>(BuiltInRegistries.ITEM);
     private final LightTagRules<EntityType<?>> entityTags = new LightTagRules<>(BuiltInRegistries.ENTITY_TYPE);
     private Map<Item, List<DynamicLightDefinition>> dataByItem = ImmutableMap.of();
@@ -59,6 +66,20 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
 
     private LightDataLoader() {
         super(new Gson(), "opal_data");
+    }
+
+    /// 注册命名光源分类，应在客户端资源加载前完成；重复注册同名分类不会产生额外加载器。
+    public static void registerNamedSection(String section) {
+        if (section == null || section.isBlank() || section.equals("blocks") || section.equals("items") || section.equals("entities")) {
+            throw new IllegalArgumentException("Invalid named light section: " + section);
+        }
+        NAMED_SOURCE_SECTIONS.add(section);
+    }
+
+    /// 查询已注册分类中的当前定义，不存在时返回 null。
+    /// 采集器每次采集时查询，以获取资源重载后的定义；返回对象不可变，在下次重载前复用。
+    public @Nullable NamedLightDefinition getNamedSource(String section, ResourceLocation id) {
+        return namedSources.getOrDefault(section, Map.of()).get(id);
     }
 
     public boolean hasItemDefinition(Item item) {
@@ -97,10 +118,15 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
         Map<EntityType<?>, List<DynamicLightDefinition>> entities = new Reference2ObjectOpenHashMap<>();
         Map<TagKey<Item>, List<DynamicLightDefinition>> itemTagData = new HashMap<>();
         Map<TagKey<EntityType<?>>, List<DynamicLightDefinition>> entityTagData = new HashMap<>();
+        Map<String, Map<ResourceLocation, NamedLightDefinition>> sources = new HashMap<>();
         for (var entry : new TreeMap<>(map).entrySet()) {
+            readNamedSources(entry.getKey(), entry.getValue(), ops, sources);
             readResource(entry.getKey(), entry.getValue(), ops, mutable, items, entities, itemTagData, entityTagData);
         }
         ModLoader.postEvent(new ModificationEvent(mutable, items, entities, itemTagData, entityTagData));
+        Map<String, Map<ResourceLocation, NamedLightDefinition>> snapshot = new HashMap<>();
+        sources.forEach((section, definitions) -> snapshot.put(section, Map.copyOf(definitions)));
+        this.namedSources = Map.copyOf(snapshot);
         this.dataByBlock = ImmutableMap.copyOf(mutable);
         this.dataByItem = ImmutableMap.copyOf(items);
         this.dataByEntity = ImmutableMap.copyOf(entities);
@@ -118,13 +144,33 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
                              Map<EntityType<?>, List<DynamicLightDefinition>> entities,
                              Map<TagKey<Item>, List<DynamicLightDefinition>> itemTags,
                              Map<TagKey<EntityType<?>>, List<DynamicLightDefinition>> entityTags) {
-        if (json.isJsonObject() && (json.getAsJsonObject().has("blocks") || json.getAsJsonObject().has("items") || json.getAsJsonObject().has("entities"))) {
+        if (json.isJsonObject() && (json.getAsJsonObject().has("blocks") || json.getAsJsonObject().has("items")
+                || json.getAsJsonObject().has("entities") || NAMED_SOURCE_SECTIONS.stream().anyMatch(json.getAsJsonObject()::has))) {
             var object = json.getAsJsonObject();
             readSection(id, "blocks", object.get("blocks"), ops, CODEC, blocks);
             readRules(id, "items", object.get("items"), ops, ITEM_RULE_CODEC, BuiltInRegistries.ITEM, items, itemTags);
             readRules(id, "entities", object.get("entities"), ops, ENTITY_RULE_CODEC, BuiltInRegistries.ENTITY_TYPE, entities, entityTags);
         } else {
             readSection(id, "blocks", json, ops, CODEC, blocks);
+        }
+    }
+
+    private static void readNamedSources(ResourceLocation id, JsonElement json, DynamicOps<JsonElement> ops,
+                                         Map<String, Map<ResourceLocation, NamedLightDefinition>> sources) {
+        if (!json.isJsonObject()) return;
+        var object = json.getAsJsonObject();
+        for (String section : NAMED_SOURCE_SECTIONS) {
+            Map<ResourceLocation, DynamicLightDefinition> definitions = new HashMap<>();
+            readSection(id, section, object.get(section), ops, NAMED_SOURCE_CODEC, definitions);
+            definitions.forEach((key, definition) -> {
+                if (definition.burning().isPresent() || definition.itemState().isPresent() || definition.entityState().isPresent()) {
+                    OpalLight.LOGGER.error("Unsupported state conditions in colored light definition {} ({}/{})", id, section, key);
+                } else {
+                    var source = new NamedLightDefinition(
+                            new LightProfile(definition.color(), definition.cycle().orElse(null)), definition.lightLevel());
+                    sources.computeIfAbsent(section, ignored -> new HashMap<>()).put(key, source);
+                }
+            });
         }
     }
 
@@ -195,6 +241,10 @@ public final class LightDataLoader extends SimpleJsonResourceReloadListener {
 
         public CyclePattern {
             colors = List.copyOf(colors);
+            /// 代码注册与 JSON 使用相同约束，避免传播时才遇到空调色板或零周期。
+            if (colors.size() < 2 || colors.size() > 16) throw new IllegalArgumentException("Cycle needs 2-16 colors");
+            if (periodTicks < 20 || periodTicks > 1200) throw new IllegalArgumentException("Cycle period must be between 20 and 1200 ticks");
+            if (updateIntervalTicks < 1 || updateIntervalTicks > 20) throw new IllegalArgumentException("Cycle update interval must be between 1 and 20 ticks");
         }
     }
 
